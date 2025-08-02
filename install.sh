@@ -84,14 +84,11 @@ if [ -f "$INTEL_SETVARS_SCRIPT" ]; then
     set +x
     export OCL_ICD_FILENAMES=""
     export SETVARS_ARGS="--force"
-
-    # THE CRITICAL FIX: Temporarily disable 'exit on unset variable' because
-    # the Intel setvars.sh script is not compatible with this mode.
+    # Temporarily disable 'exit on unset variable' for the Intel script.
     set +u
     source "$INTEL_SETVARS_SCRIPT"
     # Re-enable the strictness for the rest of our script.
     set -u
-
     unset SETVARS_ARGS
     set -x
 
@@ -99,7 +96,7 @@ if [ -f "$INTEL_SETVARS_SCRIPT" ]; then
     export CXX=icpc
     echo "Using Intel compilers: $(which icx)"
 
-    INTEL_BASE_FLAGS="-O3 -ipo -flto -static \
+    INTEL_BASE_FLAGS="-O3 -ipo -flto=full -static \
 -fno-strict-aliasing -fno-omit-frame-pointer \
 -fvisibility=hidden -fvisibility-inlines-hidden \
 -pipe \
@@ -109,7 +106,9 @@ if [ -f "$INTEL_SETVARS_SCRIPT" ]; then
 
     BUILD_CFLAGS_GEN="${INTEL_BASE_FLAGS} -prof-gen=threadsafe"
     BUILD_CFLAGS_USE="${INTEL_BASE_FLAGS} -prof-use"
-    BUILD_LDFLAGS="-Wl,--gc-sections,-ipo,-static,--as-needed"
+    # THE CRITICAL FIX: Removed '-ipo' and '-static' from LDFLAGS, as they are
+    # compiler flags, not linker flags, and cause the linker to fail.
+    BUILD_LDFLAGS="-Wl,--gc-sections,--as-needed"
 
 else
     echo "------------------------------------------------------------------------"
@@ -123,11 +122,11 @@ else
     # Create a dedicated directory for GCC's profile data
     mkdir -p "${PGO_DATA_DIR}"
 
-    GCC_BASE_FLAGS="-O3 -march=native -flto -static"
+    GCC_BASE_FLAGS="-O3 -march=native -flto=full -static"
     BUILD_CFLAGS_GEN="${GCC_BASE_FLAGS} -fprofile-generate=${PGO_DATA_DIR}"
     # -fprofile-correction helps with inconsistent profiling data
     BUILD_CFLAGS_USE="${GCC_BASE_FLAGS} -fprofile-use=${PGO_DATA_DIR} -fprofile-correction"
-    BUILD_LDFLAGS="-Wl,--gc-sections -flto -static"
+    BUILD_LDFLAGS="-Wl,--gc-sections"
 fi
 
 

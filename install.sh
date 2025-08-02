@@ -1,3 +1,4 @@
+/bin/bash -s <<'EOF'
 #!/bin/bash
 #
 # This script performs a 2-stage Profile-Guided Optimization (PGO) build
@@ -238,3 +239,4 @@ echo "========================================================================"
 
 # turn off xtrace
 set +x
+EOF

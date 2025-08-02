@@ -81,14 +81,16 @@ BUILD_LDFLAGS=""
 if [ -f "$INTEL_SETVARS_SCRIPT" ]; then
     echo "Intel oneAPI environment found. Sourcing setvars.sh..."
     set +x
-    # FIX 1: Pre-declare OCL_ICD_FILENAMES to prevent an "unbound variable" error
-    # when the script is run with `set -u`.
     export OCL_ICD_FILENAMES=""
-    # FIX 2: Use SETVARS_ARGS to force the script to run even if it's already
-    # been sourced in the current shell session.
     export SETVARS_ARGS="--force"
+
+    # THE CRITICAL FIX: Temporarily disable 'exit on unset variable' because
+    # the Intel setvars.sh script is not compatible with this mode.
+    set +u
     source "$INTEL_SETVARS_SCRIPT"
-    # Clean up the environment variable after use.
+    # Re-enable the strictness for the rest of our script.
+    set -u
+
     unset SETVARS_ARGS
     set -x
 

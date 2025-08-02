@@ -384,38 +384,117 @@ void run() {
 // PART 3: IPC & SYSCALL CHAOS - fork, pipes, fds, mmap
 // ====================================================================
 namespace SyscallChaos {
-void run() {
-    std::cout << "\n--- Running IPC and Syscall Chaos ---" << std::endl;
-    int pipe_fd[2];
-    if (pipe(pipe_fd) == -1) { perror("pipe"); return; }
 
+void run_crash_signal_test() {
+    std::cout << "[Syscall] Fork and random crash signal test..." << std::endl;
+    
     pid_t pid = fork();
-    if (pid == -1) { perror("fork"); return; }
-
-    if (pid == 0) { // Child
-        close(pipe_fd[0]);
-        std::string msg = "Message from child across the pipe!";
-        write(pipe_fd[1], msg.c_str(), msg.length() + 1);
-        close(pipe_fd[1]);
-
-        void* mem = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        if (mem != MAP_FAILED) {
-            strcpy((char*)mem, "mmap successful in child");
-            munmap(mem, 4096);
-        }
-        _exit(0);
-    } else { // Parent
-        close(pipe_fd[1]);
-        char buffer[128] = {0};
-        read(pipe_fd[0], buffer, sizeof(buffer) - 1);
-        std::cout << "[IPC] Parent received: '" << buffer << "'" << std::endl;
-        close(pipe_fd[0]);
-        wait(NULL);
+    if (pid == -1) { 
+        perror("fork"); 
+        return; 
     }
 
-    std::cout << "[Syscall] Leaking a file descriptor..." << std::endl;
-    // ERROR: This file descriptor will be leaked.
-    (void)open("/dev/null", O_RDONLY);
+    if (pid == 0) { // Child process
+        std::cout << "[Child] Child process started, doing random work..." << std::endl;
+        
+        // Child does some random computational work
+        std::uniform_int_distribution<int> work_dist(1000, 5000);
+        int work_amount = work_dist(g_rng);
+        
+        volatile long sum = 0;
+        for (int i = 0; i < work_amount; ++i) {
+            sum += i * i + (i % 7) * (i % 11);
+            
+            // Small random delays to make the work take some time
+            if (i % 100 == 0) {
+                std::this_thread::sleep_for(std::chrono::microseconds(10));
+            }
+        }
+        
+        std::cout << "[Child] Child completed work, sum = " << sum << std::endl;
+        _exit(0);
+    } else { // Parent process
+        // Give child a moment to start its work
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        
+        // Send a random crash signal to the child
+        std::vector<int> crash_signals = {SIGTERM, SIGKILL, SIGINT, SIGUSR1, SIGUSR2};
+        std::uniform_int_distribution<size_t> signal_dist(0, crash_signals.size() - 1);
+        int chosen_signal = crash_signals[signal_dist(g_rng)];
+        
+        std::cout << "[Parent] Sending signal " << chosen_signal << " to child process " << pid << std::endl;
+        
+        if (kill(pid, chosen_signal) == -1) {
+            perror("kill");
+        }
+        
+        // Wait for child and get its exit status
+        int status;
+        pid_t result = waitpid(pid, &status, 0);
+        if (result != -1) {
+            if (WIFEXITED(status)) {
+                std::cout << "[Parent] Child exited normally with code " << WEXITSTATUS(status) << std::endl;
+            } else if (WIFSIGNALED(status)) {
+                std::cout << "[Parent] Child terminated by signal " << WTERMSIG(status) << std::endl;
+            }
+        } else {
+            perror("waitpid");
+        }
+    }
+}
+
+void run() {
+    std::cout << "\n--- Running IPC and Syscall Chaos ---" << std::endl;
+    
+    // Randomize the order of syscall tests
+    std::vector<std::function<void()>> syscall_tests = {
+        []() {
+            // Original pipe/mmap test
+            int pipe_fd[2];
+            if (pipe(pipe_fd) == -1) { perror("pipe"); return; }
+
+            pid_t pid = fork();
+            if (pid == -1) { perror("fork"); return; }
+
+            if (pid == 0) { // Child
+                close(pipe_fd[0]);
+                std::string msg = "Message from child across the pipe!";
+                write(pipe_fd[1], msg.c_str(), msg.length() + 1);
+                close(pipe_fd[1]);
+
+                void* mem = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+                if (mem != MAP_FAILED) {
+                    strcpy((char*)mem, "mmap successful in child");
+                    munmap(mem, 4096);
+                }
+                _exit(0);
+            } else { // Parent
+                close(pipe_fd[1]);
+                char buffer[128] = {0};
+                read(pipe_fd[0], buffer, sizeof(buffer) - 1);
+                std::cout << "[IPC] Parent received: '" << buffer << "'" << std::endl;
+                close(pipe_fd[0]);
+                wait(NULL);
+            }
+        },
+        run_crash_signal_test,
+        []() {
+            std::cout << "[Syscall] Leaking a file descriptor..." << std::endl;
+            // ERROR: This file descriptor will be leaked.
+            (void)open("/dev/null", O_RDONLY);
+        }
+    };
+    
+    std::shuffle(syscall_tests.begin(), syscall_tests.end(), g_rng);
+    
+    // Run a random subset
+    std::uniform_int_distribution<int> count_dist(1, syscall_tests.size());
+    int num_to_run = count_dist(g_rng);
+    
+    for (int i = 0; i < num_to_run; ++i) {
+        if (g_should_exit.load()) break;
+        syscall_tests[i]();
+    }
 }
 } // namespace SyscallChaos
 

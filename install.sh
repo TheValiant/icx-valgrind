@@ -126,12 +126,12 @@ INSTRUMENTED_INSTALL_DIR="${BUILD_DIR}/temp_install"
 PGO_DATA_DIR="${BUILD_DIR}/pgo-data"
 mkdir -p "${PGO_DATA_DIR}"
 
-BASE_FLAGS="-O3 -v -pipe -fp-model=fast -march=native"
+BASE_FLAGS="-O3 -v -pipe -fp-model=fast -march=native -static"
 PGO_GEN_FLAGS="-prof-gen -prof-dir=${PGO_DATA_DIR}"
 export CFLAGS="${BASE_FLAGS} ${PGO_GEN_FLAGS}"
 export CXXFLAGS="${BASE_FLAGS} ${PGO_GEN_FLAGS}"
 
-./configure --prefix="${INSTRUMENTED_INSTALL_DIR}" --disable-mpi
+./configure --prefix="${INSTRUMENTED_INSTALL_DIR}" --disable-mpi --enable-lto
 make -j"$(nproc)" V=1
 make install -j"$(nproc)" V=1
 
@@ -153,7 +153,7 @@ ${CXX} -O3 -ipo -static -g3 -flto -o "${PGO_BENCHMARK_EXE}" "${PGO_BENCHMARK_SRC
 
 echo "Running benchmark with instrumented Valgrind to generate PGO data..."
 echo "Timing information for the INSTRUMENTED run:"
-time "${INSTRUMENTED_VALGRIND}" "${VALGRIND_PGO_FLAGS}" ./"${PGO_BENCHMARK_EXE}"
+time "${INSTRUMENTED_VALGRIND}" ${VALGRIND_PGO_FLAGS} ./"${PGO_BENCHMARK_EXE}"
 
 echo "Profile data has been generated."
 
@@ -173,7 +173,7 @@ export CFLAGS="${BASE_FLAGS} ${PGO_USE_FLAGS}"
 export CXXFLAGS="${BASE_FLAGS} ${PGO_USE_FLAGS}"
 
 # Configure to install to the final destination
-./configure --prefix="${INSTALL_PREFIX}" --disable-mpi
+./configure --prefix="${INSTALL_PREFIX}" --disable-mpi --enable-lto
 make -j"$(nproc)" V=1
 
 unset CFLAGS CXXFLAGS
@@ -211,7 +211,7 @@ echo "Stage 8: Final Test: Run Optimized Valgrind and Compare Timings"
 echo "========================================================================"
 cd "${BUILD_DIR}"
 echo "Timing information for the FINAL OPTIMIZED run:"
-time "${FINAL_VALGRIND_PATH}" "${VALGRIND_PGO_FLAGS}" ./"${PGO_BENCHMARK_EXE}"
+time "${FINAL_VALGRIND_PATH}" ${VALGRIND_PGO_FLAGS} ./"${PGO_BENCHMARK_EXE}"
 
 
 echo "========================================================================"

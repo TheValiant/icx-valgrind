@@ -1,0 +1,24 @@
+==1358820== ERROR SUMMARY: 28 errors from 28 contexts (suppressed: 0 from 0)
+
+real	1m33.491s
+user	1m7.211s
+sys	0m0.958s
+BASE_FLAGS="-O3 -v -pipe -fp-model=fast -march=native"
+pre lto, 
+
+
+valgrind original
+Total tests completed: 100/100
+Total execution time: 74626ms
+================================
+
+valgrind post lto?
+Total tests completed: 100/100
+Total execution time: 83441ms
+
+wtf
+
+real	1m21.172s
+user	0m52.248s
+sys	0m0.811s
+--enable-lto plus static, significant gains

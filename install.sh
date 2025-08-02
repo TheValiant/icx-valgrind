@@ -2,7 +2,7 @@
 #!/bin/bash
 #
 # This script performs a 2-stage Profile-Guided Optimization (PGO) build
-# of Valgrind. It prioritizes the Intel oneAPI compilers (icx/icpc) but
+# of Valgrind. It prioritizes the Intel oneAPI compilers (icx/icpx) but
 # will fall back to the system's gcc/g++ if oneAPI is not found.
 #
 # It is designed to be idempotent and safe to re-run.
@@ -28,6 +28,25 @@ PGO_BENCHMARK_EXE="pgo_benchmark"
 BUILD_DIR="/tmp/valgrind-pgo-build"
 INSTALL_PREFIX="${HOME}/bin"
 FINAL_VALGRIND_PATH="${INSTALL_PREFIX}/valgrind"
+
+# Flags to use for both PGO generation and the final performance test
+VALGRIND_PGO_FLAGS="-s \
+--leak-resolution=high \
+--track-origins=yes \
+--num-callers=500 \
+--show-mismatched-frees=yes \
+--track-fds=yes \
+--trace-children=yes \
+--gen-suppressions=no \
+--error-limit=no \
+--undef-value-errors=yes \
+--expensive-definedness-checks=yes \
+--malloc-fill=0x41 \
+--free-fill=0x42 \
+--read-var-info=yes \
+--keep-debuginfo=yes \
+--show-realloc-size-zero=yes \
+--partial-loads-ok=no"
 
 # --- Main Script Logic ---
 
@@ -75,6 +94,7 @@ INTEL_SETVARS_SCRIPT="/opt/intel/oneapi/setvars.sh"
 PGO_DATA_DIR="${BUILD_DIR}/valgrind-${VALGRIND_VERSION}/pgo-data"
 
 # These variables will be assigned based on the compiler choice below
+CONFIGURE_CFLAGS=""
 BUILD_CFLAGS_GEN=""
 BUILD_CFLAGS_USE=""
 BUILD_LDFLAGS=""
@@ -84,30 +104,28 @@ if [ -f "$INTEL_SETVARS_SCRIPT" ]; then
     set +x
     export OCL_ICD_FILENAMES=""
     export SETVARS_ARGS="--force"
-    # Temporarily disable 'exit on unset variable' for the Intel script.
     set +u
     source "$INTEL_SETVARS_SCRIPT"
-    # Re-enable the strictness for the rest of our script.
     set -u
     unset SETVARS_ARGS
     set -x
 
     export CC=icx
-    export CXX=icpc
-    echo "Using Intel compilers: $(which icx)"
+    export CXX=icpx
+    export I_MPI_CC=icx
+    export I_MPI_CXX=icpx
+    echo "Using Intel compilers: $(which icx) and $(which icpx)"
 
-    INTEL_BASE_FLAGS="-O3 -ipo -v -flto=full -static \
+    INTEL_BASE_FLAGS="-O3 -v -static \
 -fno-strict-aliasing -fno-omit-frame-pointer \
--fvisibility=hidden -fvisibility-inlines-hidden \
 -pipe \
 -fp-model=fast \
--ffunction-sections -fdata-sections -march=native -fwhole-program-vtables"
+-ffunction-sections -fdata-sections -march=native"
 
+    CONFIGURE_CFLAGS="${INTEL_BASE_FLAGS}"
     BUILD_CFLAGS_GEN="${INTEL_BASE_FLAGS} -prof-gen=threadsafe"
     BUILD_CFLAGS_USE="${INTEL_BASE_FLAGS} -prof-use"
-    # THE CRITICAL FIX: Removed '-ipo' and '-static' from LDFLAGS, as they are
-    # compiler flags, not linker flags, and cause the linker to fail.
-    BUILD_LDFLAGS="-Wl,--gc-sections,--as-needed -v"
+    BUILD_LDFLAGS="-Wl,--gc-sections,--as-needed"
 
 else
     echo "------------------------------------------------------------------------"
@@ -118,14 +136,12 @@ else
     export CXX=g++
     echo "Using GCC compilers: $(which gcc)"
 
-    # Create a dedicated directory for GCC's profile data
     mkdir -p "${PGO_DATA_DIR}"
-
-    GCC_BASE_FLAGS="-O3 -march=native -flto=full -static"
+    GCC_BASE_FLAGS="-O3 -march=native -flto -static"
+    CONFIGURE_CFLAGS="${GCC_BASE_FLAGS}"
     BUILD_CFLAGS_GEN="${GCC_BASE_FLAGS} -fprofile-generate=${PGO_DATA_DIR}"
-    # -fprofile-correction helps with inconsistent profiling data
     BUILD_CFLAGS_USE="${GCC_BASE_FLAGS} -fprofile-use=${PGO_DATA_DIR} -fprofile-correction"
-    BUILD_LDFLAGS="-Wl,--gc-sections"
+    BUILD_LDFLAGS="-Wl,--gc-sections -flto -static"
 fi
 
 
@@ -134,24 +150,26 @@ echo "Stage 4: PGO Build - Phase 1 (Instrumentation)"
 echo "========================================================================"
 cd "valgrind-${VALGRIND_VERSION}"
 
-# Clean any previous build artifacts to ensure a fresh PGO build
 if [ -f "Makefile" ]; then
     make distclean || echo "distclean failed, continuing anyway..."
 fi
 
-echo "Configuring Valgrind with instrumentation flags..."
+echo "Configuring Valgrind..."
 TEMP_INSTALL_DIR="${BUILD_DIR}/temp_install"
 mkdir -p "$TEMP_INSTALL_DIR"
 
-# Pass the chosen PGO-generate flags to configure
 ./configure --prefix="${TEMP_INSTALL_DIR}" \
-    CFLAGS="${BUILD_CFLAGS_GEN}" \
-    CXXFLAGS="${BUILD_CFLAGS_GEN}" \
+    --disable-mpi \
+    CFLAGS="${CONFIGURE_CFLAGS}" \
+    CXXFLAGS="${CONFIGURE_CFLAGS}" \
     LDFLAGS="${BUILD_LDFLAGS}"
 
-echo "Building instrumented Valgrind..."
-make -j$(nproc)
-make install -j$(nproc)
+echo "Building instrumented Valgrind with PGO-generate flags..."
+make -j$(nproc) V=1 \
+    CFLAGS="${BUILD_CFLAGS_GEN}" \
+    CXXFLAGS="${BUILD_CFLAGS_GEN}"
+
+make install -j$(nproc) V=1
 INSTRUMENTED_VALGRIND="${TEMP_INSTALL_DIR}/bin/valgrind"
 
 
@@ -160,20 +178,16 @@ echo "Stage 5: Generate Profile Data"
 echo "========================================================================"
 cd "${BUILD_DIR}"
 
-if [ ! -f "${PGO_BENCHMARK_SRC}" ]; then
-    echo "Downloading PGO benchmark source..."
-    curl -L -O "${PGO_BENCHMARK_URL}"
-else
-    echo "PGO benchmark source already exists."
-fi
+echo "Downloading latest PGO benchmark source..."
+rm -f "${PGO_BENCHMARK_SRC}"
+curl -L -O "${PGO_BENCHMARK_URL}"
 
-echo "Compiling the benchmark code with the selected compiler..."
-${CXX} -O2 -o "${PGO_BENCHMARK_EXE}" "${PGO_BENCHMARK_SRC}"
+echo "Compiling the benchmark code..."
+g++ -O2 -o "${PGO_BENCHMARK_EXE}" "${PGO_BENCHMARK_SRC}"
 
 echo "Running benchmark with instrumented Valgrind to generate PGO data..."
 echo "Timing information for the INSTRUMENTED run:"
-# The 'time' command provides stderr output with timing stats
-time "${INSTRUMENTED_VALGRIND}" ./"${PGO_BENCHMARK_EXE}"
+time "${INSTRUMENTED_VALGRIND}" ${VALGRIND_PGO_FLAGS} ./"${PGO_BENCHMARK_EXE}"
 
 echo "Profile data has been generated."
 
@@ -184,11 +198,9 @@ echo "========================================================================"
 cd "valgrind-${VALGRIND_VERSION}"
 echo "Re-compiling Valgrind using the generated profile data..."
 
-# We don't need to re-run configure, just 'make' with the prof-use flags.
-make -j$(nproc) \
+make -j$(nproc) V=1 \
     CFLAGS="${BUILD_CFLAGS_USE}" \
-    CXXFLAGS="${BUILD_CFLAGS_USE}" \
-    LDFLAGS="${BUILD_LDFLAGS}"
+    CXXFLAGS="${BUILD_CFLAGS_USE}"
 
 
 echo "========================================================================"
@@ -210,7 +222,6 @@ for rc_file in "${HOME}/.bashrc" "${HOME}/.zshrc"; do
             echo "${rc_file} already contains the correct PATH entry. Skipping."
         else
             echo "Adding PATH entry to ${rc_file}..."
-            # Add a newline just in case the file doesn't end with one
             echo -e "\n# Added by Valgrind PGO build script\n${EXPORT_LINE}" >> "$rc_file"
             echo "Entry added."
         fi
@@ -225,7 +236,7 @@ echo "Final Test: Run Optimized Valgrind and Compare Timings"
 echo "========================================================================"
 cd "${BUILD_DIR}"
 echo "Timing information for the FINAL OPTIMIZED run:"
-time "${FINAL_VALGRIND_PATH}" ./"${PGO_BENCHMARK_EXE}"
+time "${FINAL_VALGRIND_PATH}" ${VALGRIND_PGO_FLAGS} ./"${PGO_BENCHMARK_EXE}"
 
 
 echo "========================================================================"

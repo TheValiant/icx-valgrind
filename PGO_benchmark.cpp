@@ -41,6 +41,30 @@ long g_shared_racy_data = 0;
 std::atomic<bool> g_should_exit{false};
 std::mt19937 g_rng(std::chrono::steady_clock::now().time_since_epoch().count());
 
+// Enhanced test control and timing
+struct TestStats {
+    std::string name;
+    std::chrono::steady_clock::time_point start_time;
+    std::chrono::steady_clock::time_point end_time;
+    bool completed;
+    
+    TestStats(const std::string& n) : name(n), completed(false) {}
+    
+    void start() {
+        start_time = std::chrono::steady_clock::now();
+        std::cout << "[TIMING] Starting test: " << name << std::endl;
+    }
+    
+    void finish() {
+        end_time = std::chrono::steady_clock::now();
+        completed = true;
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
+        std::cout << "[TIMING] Completed test: " << name << " in " << duration << "ms" << std::endl;
+    }
+};
+
+std::vector<TestStats> g_test_history;
+
 // ====================================================================
 // PART 1: MEMORY ABUSER - Triggers for Valgrind's Memcheck
 // ====================================================================
@@ -135,57 +159,196 @@ void trigger_overlapping_memcpy() {
     memcpy(data + 1, data, 8); // Smaller overlap
 }
 
+// Enhanced Memcheck tests for subtle errors
+void trigger_off_by_one_errors() {
+    std::cout << "[Mem] Triggering off-by-one errors..." << std::endl;
+    
+    // Stack buffer off-by-one
+    char stack_buffer[10];
+    for (int i = 0; i <= 10; ++i) { // ERROR: i should be < 10
+        stack_buffer[i] = 'A' + (i % 26);
+    }
+    
+    // Heap buffer off-by-one
+    int* heap_buffer = new int[5];
+    for (int i = 0; i <= 5; ++i) { // ERROR: i should be < 5
+        heap_buffer[i] = i * i;
+    }
+    delete[] heap_buffer;
+    
+    // String off-by-one
+    char* str = new char[10];
+    strncpy(str, "0123456789", 10); // ERROR: no null terminator space
+    str[9] = '\0'; // This overwrites the last valid character
+    delete[] str;
+}
+
+void trigger_partial_overlaps() {
+    std::cout << "[Mem] Triggering partial memory overlaps..." << std::endl;
+    
+    char buffer[100];
+    strcpy(buffer, "This is a test string for overlap detection");
+    
+    // Partial overlap in memmove (this is actually safe, but tests the tool)
+    memmove(buffer + 5, buffer, 20);
+    
+    // Partial overlap in memcpy (this is unsafe)
+    char buffer2[50];
+    strcpy(buffer2, "Another test string");
+    memcpy(buffer2 + 3, buffer2, 15); // ERROR: overlapping regions
+}
+
+void trigger_complex_allocation_patterns() {
+    std::cout << "[Mem] Triggering complex allocation/deallocation patterns..." << std::endl;
+    
+    std::vector<void*> ptrs;
+    
+    // Pattern 1: Alternating allocation and deallocation
+    for (int i = 0; i < 20; ++i) {
+        ptrs.push_back(malloc(100 + i * 10));
+        if (i > 5 && i % 3 == 0) {
+            free(ptrs[i - 3]);
+            ptrs[i - 3] = nullptr;
+        }
+    }
+    
+    // Pattern 2: Mixed new/malloc (potential for mismatched free)
+    void* malloced = malloc(200);
+    int* newed = new int[50];
+    
+    // ERROR: Wrong deallocation methods
+    // free(newed);  // This would be an error - commented out to prevent crash
+    // delete malloced;  // This would be an error - commented out to prevent crash
+    
+    // Correct cleanup
+    free(malloced);
+    delete[] newed;
+    
+    // Clean up remaining allocations
+    for (void* ptr : ptrs) {
+        if (ptr) free(ptr);
+    }
+}
+
+void trigger_memory_alignment_issues() {
+    std::cout << "[Mem] Triggering memory alignment issues..." << std::endl;
+    
+    // Allocate buffer and create misaligned access
+    char* buffer = new char[100];
+    
+    // Force misaligned access to larger types
+    char* misaligned_ptr = buffer + 1; // Not aligned for int/double
+    
+    // These accesses may trigger alignment warnings in Valgrind
+    *(int*)misaligned_ptr = 0x12345678;
+    *(double*)(misaligned_ptr + 4) = 3.14159;
+    
+    // Read back the misaligned data
+    volatile int misaligned_int = *(int*)misaligned_ptr;
+    volatile double misaligned_double = *(double*)(misaligned_ptr + 4);
+    
+    (void)misaligned_int; (void)misaligned_double; // Prevent optimization
+    
+    delete[] buffer;
+    
+    // Test with different alignment patterns
+    for (int offset = 1; offset < 8; ++offset) {
+        char* test_buffer = new char[64];
+        char* offset_ptr = test_buffer + offset;
+        
+        // Try to access as 8-byte aligned data
+        if (offset_ptr + sizeof(long long) < test_buffer + 64) {
+            *(long long*)offset_ptr = 0xDEADBEEFCAFEBABE;
+            volatile long long val = *(long long*)offset_ptr;
+            (void)val;
+        }
+        
+        delete[] test_buffer;
+    }
+}
+
 void run() {
-    std::cout << "\n--- Running Memory Abuser ---" << std::endl;
+    TestStats test_stats("MemoryAbuser");
+    test_stats.start();
     
-    // Wrap dangerous operations in try-catch to prevent crashes
-    try {
-        trigger_use_after_free();
-    } catch (...) {
-        std::cout << "[Mem] Use-after-free caught exception." << std::endl;
+    std::cout << "\n--- Running Enhanced Memory Abuser ---" << std::endl;
+    
+    // Enhanced test selection - ensure all critical tests run
+    std::vector<std::pair<std::string, std::function<void()>>> memory_tests = {
+        {"use_after_free", []() {
+            try { trigger_use_after_free(); }
+            catch (...) { std::cout << "[Mem] Use-after-free caught exception." << std::endl; }
+        }},
+        {"heap_overflow", []() {
+            try { trigger_heap_overflow(); }
+            catch (...) { std::cout << "[Mem] Heap overflow caught exception." << std::endl; }
+        }},
+        {"stack_overflow", []() {
+            try { trigger_stack_overflow(); }
+            catch (...) { std::cout << "[Mem] Stack overflow caught exception." << std::endl; }
+        }},
+        {"uninitialized_read", []() {
+            try { trigger_uninitialized_read(); }
+            catch (...) { std::cout << "[Mem] Uninitialized read caught exception." << std::endl; }
+        }},
+        {"memory_leak", []() {
+            try { trigger_memory_leak(); }
+            catch (...) { std::cout << "[Mem] Memory leak caught exception." << std::endl; }
+        }},
+        {"mismatched_free", []() {
+            try { trigger_mismatched_free(); }
+            catch (...) { std::cout << "[Mem] Mismatched free caught exception." << std::endl; }
+        }},
+        {"double_free", []() {
+            try { trigger_double_free(); }
+            catch (...) { std::cout << "[Mem] Double free caught exception." << std::endl; }
+        }},
+        {"overlapping_memcpy", []() {
+            try { trigger_overlapping_memcpy(); }
+            catch (...) { std::cout << "[Mem] Overlapping memcpy caught exception." << std::endl; }
+        }},
+        {"off_by_one", []() {
+            try { trigger_off_by_one_errors(); }
+            catch (...) { std::cout << "[Mem] Off-by-one errors caught exception." << std::endl; }
+        }},
+        {"partial_overlaps", []() {
+            try { trigger_partial_overlaps(); }
+            catch (...) { std::cout << "[Mem] Partial overlaps caught exception." << std::endl; }
+        }},
+        {"complex_allocation", []() {
+            try { trigger_complex_allocation_patterns(); }
+            catch (...) { std::cout << "[Mem] Complex allocation caught exception." << std::endl; }
+        }},
+        {"alignment_issues", []() {
+            try { trigger_memory_alignment_issues(); }
+            catch (...) { std::cout << "[Mem] Alignment issues caught exception." << std::endl; }
+        }}
+    };
+    
+    // Shuffle for randomization but ensure critical tests always run
+    std::shuffle(memory_tests.begin(), memory_tests.end(), g_rng);
+    
+    // Always run the first 8 tests (core functionality)
+    int core_tests = std::min(8, (int)memory_tests.size());
+    for (int i = 0; i < core_tests; ++i) {
+        std::cout << "[Mem] Running " << memory_tests[i].first << "..." << std::endl;
+        auto test_start = std::chrono::steady_clock::now();
+        memory_tests[i].second();
+        auto test_end = std::chrono::steady_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(test_end - test_start).count();
+        std::cout << "[Mem] " << memory_tests[i].first << " completed in " << duration << "ms" << std::endl;
     }
     
-    try {
-        trigger_heap_overflow();
-    } catch (...) {
-        std::cout << "[Mem] Heap overflow caught exception." << std::endl;
+    // Run additional tests based on available time
+    std::uniform_int_distribution<int> extra_dist(0, memory_tests.size() - core_tests);
+    int extra_tests = extra_dist(g_rng);
+    for (int i = core_tests; i < core_tests + extra_tests && i < memory_tests.size(); ++i) {
+        std::cout << "[Mem] Running additional " << memory_tests[i].first << "..." << std::endl;
+        memory_tests[i].second();
     }
     
-    try {
-        trigger_stack_overflow();
-    } catch (...) {
-        std::cout << "[Mem] Stack overflow caught exception." << std::endl;
-    }
-    
-    try {
-        trigger_uninitialized_read();
-    } catch (...) {
-        std::cout << "[Mem] Uninitialized read caught exception." << std::endl;
-    }
-    
-    try {
-        trigger_memory_leak();
-    } catch (...) {
-        std::cout << "[Mem] Memory leak caught exception." << std::endl;
-    }
-    
-    try {
-        trigger_mismatched_free();
-    } catch (...) {
-        std::cout << "[Mem] Mismatched free caught exception." << std::endl;
-    }
-    
-    try {
-        trigger_double_free();
-    } catch (...) {
-        std::cout << "[Mem] Double free caught exception." << std::endl;
-    }
-    
-    try {
-        trigger_overlapping_memcpy();
-    } catch (...) {
-        std::cout << "[Mem] Overlapping memcpy caught exception." << std::endl;
-    }
+    test_stats.finish();
+    g_test_history.push_back(test_stats);
 }
 } // namespace MemoryAbuser
 
@@ -504,37 +667,52 @@ void run() {
 // ====================================================================
 namespace AlgorithmStress {
 
-// --- 4a: Graph algorithm (Dijkstra's) ---
+// --- 4a: Graph algorithm (Dijkstra's) - Enhanced CPU intensity ---
 void run_dijkstra() {
-    std::cout << "[Algo] Running Dijkstra's Algorithm..." << std::endl;
-    int num_vertices = 500;
+    std::cout << "[Algo] Running Enhanced Dijkstra's Algorithm..." << std::endl;
+    int num_vertices = 1000; // Increased from 500
     using Edge = std::pair<int, int>;
     std::vector<std::list<Edge>> adj(num_vertices);
 
-    // Create a dense graph to make it work harder
+    // Create a much denser graph with more complex weight calculations
     for (int i = 0; i < num_vertices; ++i) {
-        for (int j = 0; j < 10; ++j) {
-            adj[i].push_back({(i * j) % 100 + 1, (i + j + 1) % num_vertices});
+        for (int j = 0; j < 25; ++j) { // Increased from 10
+            // More complex weight calculation for CPU intensity
+            int weight = (i * j * 17 + i * i + j * j) % 150 + 1;
+            int target = (i + j * 7 + weight) % num_vertices;
+            adj[i].push_back({weight, target});
         }
     }
 
     std::priority_queue<Edge, std::vector<Edge>, std::greater<Edge>> pq;
     std::vector<int> dist(num_vertices, std::numeric_limits<int>::max());
 
-    int start_node = 0;
-    pq.push({0, start_node});
-    dist[start_node] = 0;
+    // Run multiple iterations from different start nodes for better profiling
+    std::vector<int> start_nodes = {0, num_vertices/4, num_vertices/2, 3*num_vertices/4};
+    
+    for (int start_node : start_nodes) {
+        std::fill(dist.begin(), dist.end(), std::numeric_limits<int>::max());
+        while (!pq.empty()) pq.pop(); // Clear priority queue
+        
+        pq.push({0, start_node});
+        dist[start_node] = 0;
+        int processed_nodes = 0;
 
-    while (!pq.empty()) {
-        int u = pq.top().second;
-        pq.pop();
+        while (!pq.empty() && processed_nodes < num_vertices) {
+            int u = pq.top().second;
+            int d = pq.top().first;
+            pq.pop();
+            processed_nodes++;
+            
+            if (d > dist[u]) continue; // Skip outdated entries
 
-        for (const auto& edge : adj[u]) {
-            int v = edge.second;
-            int weight = edge.first;
-            if (dist[u] != std::numeric_limits<int>::max() && dist[u] + weight < dist[v]) {
-                dist[v] = dist[u] + weight;
-                pq.push({dist[v], v});
+            for (const auto& edge : adj[u]) {
+                int v = edge.second;
+                int weight = edge.first;
+                if (dist[u] != std::numeric_limits<int>::max() && dist[u] + weight < dist[v]) {
+                    dist[v] = dist[u] + weight;
+                    pq.push({dist[v], v});
+                }
             }
         }
     }
@@ -846,46 +1024,88 @@ void run_suffix_array() {
 // ====================================================================
 namespace ProfilingTargets {
 
-// --- 5a: Heap profiler target (Massif) ---
+// --- 5a: Enhanced heap profiler target (Massif) ---
 void run_massif_sawtooth() {
-    std::cout << "[Profile] Running Massif 'sawtooth' heap stress..." << std::endl;
-    std::vector<int*> memory_chunks;
+    std::cout << "[Profile] Running Enhanced Massif heap stress with diverse patterns..." << std::endl;
     
-    // 5 peaks of memory allocation
-    for (int i = 0; i < 5; ++i) {
-        // Allocate 1000 chunks of 10KB each (total ~10MB)
-        for (int j = 0; j < 1000; ++j) {
-            memory_chunks.push_back(new int[2500]); // 10000 bytes
+    // Pattern 1: Classic sawtooth
+    std::vector<int*> memory_chunks;
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 500; ++j) {
+            memory_chunks.push_back(new int[2500]); // 10KB chunks
         }
-        // Deallocate all chunks
         for (int* chunk : memory_chunks) {
             delete[] chunk;
         }
         memory_chunks.clear();
     }
+    
+    // Pattern 2: Fragmentation pattern - allocate different sizes
+    std::vector<char*> mixed_chunks;
+    std::uniform_int_distribution<int> size_dist(100, 5000);
+    for (int i = 0; i < 1000; ++i) {
+        int size = size_dist(g_rng);
+        mixed_chunks.push_back(new char[size]);
+        
+        // Randomly deallocate some chunks to create fragmentation
+        if (i > 100 && g_rng() % 3 == 0) {
+            int idx = g_rng() % mixed_chunks.size();
+            if (mixed_chunks[idx]) {
+                delete[] mixed_chunks[idx];
+                mixed_chunks[idx] = nullptr;
+            }
+        }
+    }
+    
+    // Clean up remaining chunks
+    for (char* chunk : mixed_chunks) {
+        if (chunk) delete[] chunk;
+    }
+    mixed_chunks.clear();
+    
+    // Pattern 3: Large allocation bursts
+    std::vector<double*> large_chunks;
+    for (int burst = 0; burst < 5; ++burst) {
+        for (int i = 0; i < 50; ++i) {
+            large_chunks.push_back(new double[50000]); // 400KB chunks
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    
+    // Deallocate in reverse order for different deallocation pattern
+    for (auto it = large_chunks.rbegin(); it != large_chunks.rend(); ++it) {
+        delete[] *it;
+    }
+    
+    // Pattern 4: Persistent allocations with gradual growth
+    static std::vector<std::vector<long>*> persistent_data;
+    for (int i = 0; i < 20; ++i) {
+        auto* vec = new std::vector<long>(1000 + i * 500);
+        persistent_data.push_back(vec);
+    }
 }
 
-// --- 5b: Cache profiler target (Cachegrind) ---
+// --- 5b: Enhanced cache profiler target (Cachegrind) ---
 namespace CacheStress {
     const int SIZE = 1024;
+    const int LARGE_SIZE = 2048;
     std::vector<std::vector<int>> matrix(SIZE, std::vector<int>(SIZE));
+    std::vector<int> large_array(LARGE_SIZE * LARGE_SIZE);
+    std::vector<int*> pointer_chase_array;
 
     void transpose_naive() {
-        // This is cache-unfriendly. When writing to `matrix[j][i]`, you jump
-        // across huge memory regions, causing many cache misses.
+        // Cache-unfriendly matrix transpose
         for (int i = 0; i < SIZE; ++i) {
             for (int j = 0; j < SIZE; ++j) {
-                // Swap operation, but the access pattern is the key
                 std::swap(matrix[i][j], matrix[j][i]);
             }
         }
     }
     
     void transpose_tiled(int blocksize) {
-        // This is cache-friendly. It processes small blocks that fit in cache.
+        // Cache-friendly tiled transpose
         for (int i = 0; i < SIZE; i += blocksize) {
             for (int j = 0; j < SIZE; j += blocksize) {
-                // Transpose the block
                 for (int k = i; k < i + blocksize; ++k) {
                     for (int l = j; l < j + blocksize; ++l) {
                         std::swap(matrix[k][l], matrix[l][k]);
@@ -894,19 +1114,85 @@ namespace CacheStress {
             }
         }
     }
+    
+    void random_access_pattern() {
+        // Extremely cache-unfriendly random access
+        std::uniform_int_distribution<int> dist(0, LARGE_SIZE * LARGE_SIZE - 1);
+        for (int i = 0; i < 100000; ++i) {
+            int idx = dist(g_rng);
+            large_array[idx] += i % 255;
+        }
+    }
+    
+    void pointer_chasing() {
+        // Set up pointer chasing pattern - very cache unfriendly
+        const int CHASE_SIZE = 10000;
+        pointer_chase_array.resize(CHASE_SIZE);
+        
+        // Allocate scattered memory chunks
+        for (int i = 0; i < CHASE_SIZE; ++i) {
+            pointer_chase_array[i] = new int[100];
+        }
+        
+        // Create random pointer chase pattern
+        std::vector<int> indices(CHASE_SIZE);
+        std::iota(indices.begin(), indices.end(), 0);
+        std::shuffle(indices.begin(), indices.end(), g_rng);
+        
+        // Follow the pointer chain
+        int current = 0;
+        for (int i = 0; i < 50000; ++i) {
+            current = indices[current % CHASE_SIZE];
+            pointer_chase_array[current][i % 100] += 1;
+        }
+        
+        // Clean up
+        for (int* ptr : pointer_chase_array) {
+            delete[] ptr;
+        }
+        pointer_chase_array.clear();
+    }
+    
+    void strided_access() {
+        // Cache-unfriendly strided access pattern
+        const int STRIDE = 64; // Skip cache lines
+        for (int stride = 1; stride <= STRIDE; stride *= 2) {
+            for (int i = 0; i < LARGE_SIZE * LARGE_SIZE; i += stride) {
+                large_array[i] += stride;
+            }
+        }
+    }
 }
 
 void run_cache_stress() {
-    std::cout << "[Profile] Running Cachegrind stress (naive vs. tiled)..." << std::endl;
-    // Initializing matrix data once
-    for(int i=0; i<CacheStress::SIZE; ++i) for(int j=0; j<CacheStress::SIZE; ++j) CacheStress::matrix[i][j] = i*j;
+    std::cout << "[Profile] Running Enhanced Cachegrind stress (multiple patterns)..." << std::endl;
+    
+    // Initialize data structures
+    for(int i=0; i<CacheStress::SIZE; ++i) {
+        for(int j=0; j<CacheStress::SIZE; ++j) {
+            CacheStress::matrix[i][j] = i*j;
+        }
+    }
+    
+    for(int i=0; i<CacheStress::LARGE_SIZE * CacheStress::LARGE_SIZE; ++i) {
+        CacheStress::large_array[i] = i % 1000;
+    }
 
-    // Run the inefficient version
+    // Run multiple cache stress patterns
+    std::cout << "[Profile] Running naive transpose..." << std::endl;
     CacheStress::transpose_naive();
     
-    // Run the efficient version. A profiler like Cachegrind will show
-    // a dramatic reduction in cache misses (D1 misses, L3 misses).
+    std::cout << "[Profile] Running tiled transpose..." << std::endl;
     CacheStress::transpose_tiled(32);
+    
+    std::cout << "[Profile] Running random access pattern..." << std::endl;
+    CacheStress::random_access_pattern();
+    
+    std::cout << "[Profile] Running pointer chasing..." << std::endl;
+    CacheStress::pointer_chasing();
+    
+    std::cout << "[Profile] Running strided access..." << std::endl;
+    CacheStress::strided_access();
 }
 
 void run() {
@@ -919,28 +1205,104 @@ void run() {
 
 
 // ====================================================================
-// --- MAIN ORCHESTRATOR ---
+// --- ENHANCED MAIN ORCHESTRATOR WITH PROGRESS REPORTING ---
 // ====================================================================
+
+void print_test_summary() {
+    std::cout << "\n=== TEST EXECUTION SUMMARY ===" << std::endl;
+    long long total_time = 0;
+    int completed_tests = 0;
+    
+    for (const auto& test : g_test_history) {
+        if (test.completed) {
+            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+                test.end_time - test.start_time).count();
+            total_time += duration;
+            completed_tests++;
+            std::cout << "✓ " << test.name << ": " << duration << "ms" << std::endl;
+        } else {
+            std::cout << "✗ " << test.name << ": INCOMPLETE" << std::endl;
+        }
+    }
+    
+    std::cout << "Total tests completed: " << completed_tests << "/" << g_test_history.size() << std::endl;
+    std::cout << "Total execution time: " << total_time << "ms" << std::endl;
+    std::cout << "================================" << std::endl;
+}
+
 void run_all_tests() {
-    // Randomize the order of test execution
-    std::vector<std::function<void()>> test_functions = {
-        MemoryAbuser::run,
-        ThreadingNightmare::run,
-        SyscallChaos::run,
-        AlgorithmStress::run,
-        ProfilingTargets::run
+    TestStats orchestrator_stats("TestOrchestrator");
+    orchestrator_stats.start();
+    
+    std::cout << "[PROGRESS] Starting comprehensive test suite..." << std::endl;
+    
+    // Enhanced test selection with priority system
+    struct TestInfo {
+        std::string name;
+        std::function<void()> func;
+        int priority; // Higher = more important
+        bool always_run;
     };
     
-    std::shuffle(test_functions.begin(), test_functions.end(), g_rng);
+    std::vector<TestInfo> test_functions = {
+        {"MemoryAbuser", MemoryAbuser::run, 10, true},
+        {"ThreadingNightmare", ThreadingNightmare::run, 8, true}, 
+        {"AlgorithmStress", AlgorithmStress::run, 7, false},
+        {"ProfilingTargets", ProfilingTargets::run, 6, false},
+        {"SyscallChaos", SyscallChaos::run, 5, false}
+    };
     
-    // Run a random subset of tests
-    std::uniform_int_distribution<int> count_dist(2, test_functions.size());
-    int num_to_run = count_dist(g_rng);
+    // Sort by priority (highest first)
+    std::sort(test_functions.begin(), test_functions.end(), 
+              [](const TestInfo& a, const TestInfo& b) { return a.priority > b.priority; });
     
-    for (int i = 0; i < num_to_run; ++i) {
-        if (g_should_exit.load()) break;
-        test_functions[i]();
+    // Always run high-priority tests
+    std::vector<TestInfo> selected_tests;
+    for (const auto& test : test_functions) {
+        if (test.always_run) {
+            selected_tests.push_back(test);
+        }
     }
+    
+    // Randomly select additional tests
+    std::vector<TestInfo> optional_tests;
+    for (const auto& test : test_functions) {
+        if (!test.always_run) {
+            optional_tests.push_back(test);
+        }
+    }
+    
+    std::shuffle(optional_tests.begin(), optional_tests.end(), g_rng);
+    std::uniform_int_distribution<int> count_dist(1, optional_tests.size());
+    int num_optional = count_dist(g_rng);
+    
+    for (int i = 0; i < num_optional; ++i) {
+        selected_tests.push_back(optional_tests[i]);
+    }
+    
+    // Execute selected tests with progress reporting
+    int test_num = 0;
+    for (const auto& test_info : selected_tests) {
+        if (g_should_exit.load()) break;
+        
+        test_num++;
+        std::cout << "\n[PROGRESS] Running test " << test_num << "/" << selected_tests.size() 
+                  << ": " << test_info.name << std::endl;
+        std::cout << "[PROGRESS] Priority: " << test_info.priority << std::endl;
+        
+        auto test_start = std::chrono::steady_clock::now();
+        test_info.func();
+        auto test_end = std::chrono::steady_clock::now();
+        
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(test_end - test_start).count();
+        std::cout << "[PROGRESS] Completed " << test_info.name << " in " << duration << "ms" << std::endl;
+    }
+    
+    orchestrator_stats.finish();
+    g_test_history.push_back(orchestrator_stats);
+    
+    // Print summary
+    print_test_summary();
 }
 
 int main(int argc, char* argv[]) {
@@ -993,7 +1355,7 @@ int main(int argc, char* argv[]) {
             return 1;
         }
     } else {
-        std::cout << "Running randomized test suites in a time-limited loop." << std::endl;
+        std::cout << "Running randomized test suites with enhanced timing and progress tracking." << std::endl;
         auto start_time = std::chrono::steady_clock::now();
         int cycle = 0;
         const int MAX_CYCLES = 50; // Hard limit to prevent infinite loops
@@ -1008,7 +1370,9 @@ int main(int argc, char* argv[]) {
             }
 
             std::cout << "\n=========================================" << std::endl;
-            std::cout << "Starting Test Cycle " << ++cycle << "/" << MAX_CYCLES << " (Elapsed: " << elapsed_seconds << "s)" << std::endl;
+            std::cout << "Starting Enhanced Test Cycle " << ++cycle << "/" << MAX_CYCLES << std::endl;
+            std::cout << "Elapsed: " << elapsed_seconds << "s / " << RUN_DURATION_SECONDS << "s" << std::endl;
+            std::cout << "Tests completed so far: " << g_test_history.size() << std::endl;
             std::cout << "=========================================\n" << std::endl;
             
             // Add random delay between cycles
@@ -1016,6 +1380,12 @@ int main(int argc, char* argv[]) {
             std::this_thread::sleep_for(std::chrono::milliseconds(delay_dist(g_rng)));
             
             run_all_tests();
+            
+            // Print intermediate progress
+            if (cycle % 5 == 0) {
+                std::cout << "\n[INTERMEDIATE PROGRESS] After " << cycle << " cycles:" << std::endl;
+                print_test_summary();
+            }
         }
         
         if (cycle >= MAX_CYCLES) {
@@ -1025,5 +1395,10 @@ int main(int argc, char* argv[]) {
 
     g_should_exit.store(true);
     std::cout << "\nUltimate stress test finished gracefully." << std::endl;
+    
+    // Final summary
+    std::cout << "\n=== FINAL TEST EXECUTION REPORT ===" << std::endl;
+    print_test_summary();
+    
     return 0;
 }

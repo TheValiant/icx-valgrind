@@ -16,6 +16,7 @@
 #include <cstring> // For C-style string functions
 #include <chrono>  // For timing
 #include <condition_variable>
+#include <string.h>
 
 // System headers
 #include <unistd.h>

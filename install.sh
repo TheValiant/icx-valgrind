@@ -96,11 +96,10 @@ if [ -f "$INTEL_SETVARS_SCRIPT" ]; then
     export CXX=icpc
     echo "Using Intel compilers: $(which icx)"
 
-    INTEL_BASE_FLAGS="-O3 -ipo -flto=full -static \
+    INTEL_BASE_FLAGS="-O3 -ipo -v -flto=full -static \
 -fno-strict-aliasing -fno-omit-frame-pointer \
 -fvisibility=hidden -fvisibility-inlines-hidden \
 -pipe \
--axCORE-AVX2,AVX512_VNNI -qopt-zmm-usage=high \
 -fp-model=fast \
 -ffunction-sections -fdata-sections -march=native -fwhole-program-vtables"
 
@@ -108,7 +107,7 @@ if [ -f "$INTEL_SETVARS_SCRIPT" ]; then
     BUILD_CFLAGS_USE="${INTEL_BASE_FLAGS} -prof-use"
     # THE CRITICAL FIX: Removed '-ipo' and '-static' from LDFLAGS, as they are
     # compiler flags, not linker flags, and cause the linker to fail.
-    BUILD_LDFLAGS="-Wl,--gc-sections,--as-needed"
+    BUILD_LDFLAGS="-Wl,--gc-sections,--as-needed -v"
 
 else
     echo "------------------------------------------------------------------------"

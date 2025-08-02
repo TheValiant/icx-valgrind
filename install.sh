@@ -1,4 +1,3 @@
-/bin/bash -s <<'EOF'
 #!/bin/bash
 #
 # This script performs a 2-stage Profile-Guided Optimization (PGO) build
@@ -72,6 +71,7 @@ if [ -f "$INTEL_SETVARS_SCRIPT" ]; then
     export OCL_ICD_FILENAMES=""
     export SETVARS_ARGS="--force"
     set +u
+    # shellcheck source=/opt/intel/oneapi/setvars.sh
     source "$INTEL_SETVARS_SCRIPT"
     set -u
     unset SETVARS_ARGS
@@ -132,8 +132,8 @@ export CFLAGS="${BASE_FLAGS} ${PGO_GEN_FLAGS}"
 export CXXFLAGS="${BASE_FLAGS} ${PGO_GEN_FLAGS}"
 
 ./configure --prefix="${INSTRUMENTED_INSTALL_DIR}" --disable-mpi
-make -j$(nproc) V=1
-make install -j$(nproc) V=1
+make -j"$(nproc)" V=1
+make install -j"$(nproc)" V=1
 
 unset CFLAGS CXXFLAGS
 INSTRUMENTED_VALGRIND="${INSTRUMENTED_INSTALL_DIR}/bin/valgrind"
@@ -153,7 +153,7 @@ ${CXX} -O3 -ipo -static -g3 -flto -o "${PGO_BENCHMARK_EXE}" "${PGO_BENCHMARK_SRC
 
 echo "Running benchmark with instrumented Valgrind to generate PGO data..."
 echo "Timing information for the INSTRUMENTED run:"
-time "${INSTRUMENTED_VALGRIND}" ${VALGRIND_PGO_FLAGS} ./"${PGO_BENCHMARK_EXE}"
+time "${INSTRUMENTED_VALGRIND}" "${VALGRIND_PGO_FLAGS}" ./"${PGO_BENCHMARK_EXE}"
 
 echo "Profile data has been generated."
 
@@ -174,7 +174,7 @@ export CXXFLAGS="${BASE_FLAGS} ${PGO_USE_FLAGS}"
 
 # Configure to install to the final destination
 ./configure --prefix="${INSTALL_PREFIX}" --disable-mpi
-make -j$(nproc) V=1
+make -j"$(nproc)" V=1
 
 unset CFLAGS CXXFLAGS
 
@@ -183,13 +183,13 @@ echo "========================================================================"
 echo "Stage 6: Install Final Binary and Tool Libraries"
 echo "========================================================================"
 echo "Installing the final optimized binary and all its components to ${INSTALL_PREFIX}"
-make install -j$(nproc) V=1
+make install -j"$(nproc)" V=1
 
 
 echo "========================================================================"
 echo "Stage 7: Update Shell RC Files"
 echo "========================================================================"
-EXPORT_LINE='export PATH="'${INSTALL_PREFIX}'/bin:$PATH"'
+EXPORT_LINE="export PATH=\"${INSTALL_PREFIX}/bin:\$PATH\""
 
 for rc_file in "${HOME}/.bashrc" "${HOME}/.zshrc"; do
     if [ -f "$rc_file" ]; then
@@ -211,7 +211,7 @@ echo "Stage 8: Final Test: Run Optimized Valgrind and Compare Timings"
 echo "========================================================================"
 cd "${BUILD_DIR}"
 echo "Timing information for the FINAL OPTIMIZED run:"
-time "${FINAL_VALGRIND_PATH}" ${VALGRIND_PGO_FLAGS} ./"${PGO_BENCHMARK_EXE}"
+time "${FINAL_VALGRIND_PATH}" "${VALGRIND_PGO_FLAGS}" ./"${PGO_BENCHMARK_EXE}"
 
 
 echo "========================================================================"
@@ -223,4 +223,3 @@ echo "========================================================================"
 
 # turn off xtrace
 set +x
-EOF

@@ -1,0 +1,8 @@
+#! /bin/sh
+# memcheck/tests/x86/filter_pushfpopf.  Generated from filter_pushfpopf.in by configure.
+
+SED=/usr/bin/sed
+
+./filter_stderr "$@" |
+$SED "s/: fooble ([^)]*)/: fooble (...)/"
+

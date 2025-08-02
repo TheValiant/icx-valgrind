@@ -1,0 +1,10 @@
+#! /bin/sh
+# memcheck/tests/filter_supp.  Generated from filter_supp.in by configure.
+
+SED=/usr/bin/sed
+
+./filter_stderr "$@" |
+
+$SED 'N;/^used_suppression/M{/^used_suppression/d;$!N;d};P;D'
+
+exit 0

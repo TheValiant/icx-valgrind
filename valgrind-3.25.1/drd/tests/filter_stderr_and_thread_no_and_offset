@@ -1,0 +1,7 @@
+#!/bin/sh
+# drd/tests/filter_stderr_and_thread_no_and_offset.  Generated from filter_stderr_and_thread_no_and_offset.in by configure.
+
+SED=/usr/bin/sed
+
+./filter_stderr_and_thread_no \
+| $SED "s/ is at offset [0-9]* from / is at offset ... from /"

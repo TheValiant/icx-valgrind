@@ -1,0 +1,8 @@
+#! /bin/sh
+# drd/tests/filter_xml_and_thread_no.  Generated from filter_xml_and_thread_no.in by configure.
+
+SED=/usr/bin/sed
+
+../../memcheck/tests/filter_xml |
+./filter_thread_no |
+$SED 's/ vc: \[[0-9:, ]*\]/ vc: [ ... ]/g'

@@ -22,3 +22,7 @@ real	1m21.172s
 user	0m52.248s
 sys	0m0.811s
 --enable-lto plus static, significant gains
+
+Total tests completed: 100/100
+Total execution time: 73382ms
+post enable lto and static, now at baseline smh

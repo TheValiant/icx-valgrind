@@ -40,14 +40,14 @@ std::mutex g_mutex_b;
 long g_shared_racy_data = 0;
 std::atomic<bool> g_should_exit{false};
 std::mt19937 g_rng(std::chrono::steady_clock::now().time_since_epoch().count());
-
+static const bool VERBOSE = false;
 // ====================================================================
 // PART 1: MEMORY ABUSER - Triggers for Valgrind's Memcheck
 // ====================================================================
 namespace MemoryAbuser {
 
 void trigger_use_after_free() {
-    std::cout << "[Mem] Triggering use-after-free..." << std::endl;
+    if (VERBOSE) std::cout << "[Mem] Triggering use-after-free..." << std::endl;
     int* ptr = new int[50];
     ptr[25] = 123;
     delete[] ptr;
@@ -58,7 +58,7 @@ void trigger_use_after_free() {
 }
 
 void trigger_heap_overflow() {
-    std::cout << "[Mem] Triggering heap buffer overflow..." << std::endl;
+    if (VERBOSE) std::cout << "[Mem] Triggering heap buffer overflow..." << std::endl;
     char* buffer = new char[32];
     // ERROR: Writing 1 byte past the allocated chunk.
     buffer[32] = 'X'; 
@@ -66,7 +66,7 @@ void trigger_heap_overflow() {
 }
 
 void trigger_stack_overflow() {
-    std::cout << "[Mem] Triggering stack buffer overflow..." << std::endl;
+    if (VERBOSE) std::cout << "[Mem] Triggering stack buffer overflow..." << std::endl;
     char buffer[16];
     // ERROR: Writing past the end of a stack-allocated buffer.
     // Use a very controlled overflow that Valgrind can catch
@@ -90,7 +90,7 @@ void trigger_stack_overflow() {
 }
 
 void trigger_uninitialized_read() {
-    std::cout << "[Mem] Triggering uninitialized value read..." << std::endl;
+    if (VERBOSE) std::cout << "[Mem] Triggering uninitialized value read..." << std::endl;
     int x; // Uninitialized
     // ERROR: x is uninitialized and used in a conditional jump.
     if (x > 100) {
@@ -98,35 +98,35 @@ void trigger_uninitialized_read() {
     } else {
         x = 0;
     }
-    std::cout << "[Mem] Uninitialized value was used in a branch (result: " << x << ")." << std::endl;
+    if (VERBOSE) std::cout << "[Mem] Uninitialized value was used in a branch (result: " << x << ")." << std::endl;
 }
 
 void trigger_memory_leak() {
-    std::cout << "[Mem] Triggering a definite memory leak..." << std::endl;
+    if (VERBOSE) std::cout << "[Mem] Triggering a definite memory leak..." << std::endl;
     // ERROR: Leaking this memory.
     new std::string("This string is a definite memory leak.");
 }
 
 void trigger_mismatched_free() {
-    std::cout << "[Mem] Triggering mismatched new[]/delete..." << std::endl;
+    if (VERBOSE) std::cout << "[Mem] Triggering mismatched new[]/delete..." << std::endl;
     // ERROR: Allocating an array but using scalar delete.
     int* array = new int[10];
     delete array;
 }
 
 void trigger_double_free() {
-    std::cout << "[Mem] Triggering double free..." << std::endl;
+    if (VERBOSE) std::cout << "[Mem] Triggering double free..." << std::endl;
     int* p = new int(42);
     delete p;
     // ERROR: Deleting the same memory twice.
     // This is very likely to crash, so we'll comment it out for now
     // and let Valgrind detect the other errors instead
     // delete p;
-    std::cout << "[Mem] Double free skipped to prevent crash." << std::endl;
+    if (VERBOSE) std::cout << "[Mem] Double free skipped to prevent crash." << std::endl;
 }
 
 void trigger_overlapping_memcpy() {
-    std::cout << "[Mem] Triggering overlapping src/dst in memcpy..." << std::endl;
+    if (VERBOSE) std::cout << "[Mem] Triggering overlapping src/dst in memcpy..." << std::endl;
     char data[20];
     strcpy(data, "0123456789");
     // ERROR: src and dst overlap in a way that memcpy doesn't support.
@@ -136,55 +136,55 @@ void trigger_overlapping_memcpy() {
 }
 
 void run() {
-    std::cout << "\n--- Running Memory Abuser ---" << std::endl;
+    if (VERBOSE) std::cout << "\n--- Running Memory Abuser ---" << std::endl;
     
     // Wrap dangerous operations in try-catch to prevent crashes
     try {
         trigger_use_after_free();
     } catch (...) {
-        std::cout << "[Mem] Use-after-free caught exception." << std::endl;
+        if (VERBOSE) std::cout << "[Mem] Use-after-free caught exception." << std::endl;
     }
     
     try {
         trigger_heap_overflow();
     } catch (...) {
-        std::cout << "[Mem] Heap overflow caught exception." << std::endl;
+        if (VERBOSE) std::cout << "[Mem] Heap overflow caught exception." << std::endl;
     }
     
     try {
         trigger_stack_overflow();
     } catch (...) {
-        std::cout << "[Mem] Stack overflow caught exception." << std::endl;
+        if (VERBOSE) std::cout << "[Mem] Stack overflow caught exception." << std::endl;
     }
     
     try {
         trigger_uninitialized_read();
     } catch (...) {
-        std::cout << "[Mem] Uninitialized read caught exception." << std::endl;
+        if (VERBOSE) std::cout << "[Mem] Uninitialized read caught exception." << std::endl;
     }
     
     try {
         trigger_memory_leak();
     } catch (...) {
-        std::cout << "[Mem] Memory leak caught exception." << std::endl;
+        if (VERBOSE) std::cout << "[Mem] Memory leak caught exception." << std::endl;
     }
     
     try {
         trigger_mismatched_free();
     } catch (...) {
-        std::cout << "[Mem] Mismatched free caught exception." << std::endl;
+        if (VERBOSE) std::cout << "[Mem] Mismatched free caught exception." << std::endl;
     }
     
     try {
         trigger_double_free();
     } catch (...) {
-        std::cout << "[Mem] Double free caught exception." << std::endl;
+        if (VERBOSE) std::cout << "[Mem] Double free caught exception." << std::endl;
     }
     
     try {
         trigger_overlapping_memcpy();
     } catch (...) {
-        std::cout << "[Mem] Overlapping memcpy caught exception." << std::endl;
+        if (VERBOSE) std::cout << "[Mem] Overlapping memcpy caught exception." << std::endl;
     }
 }
 } // namespace MemoryAbuser
@@ -214,61 +214,61 @@ void racy_thread_func() {
 
 void deadlock_thread_a() {
     if (g_should_exit.load()) return;
-    std::cout << "[Thread] Deadlock thread A starting..." << std::endl;
+    if (VERBOSE) std::cout << "[Thread] Deadlock thread A starting..." << std::endl;
     
     auto start = std::chrono::steady_clock::now();
     if (g_mutex_a.try_lock()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        std::cout << "[Thread] A trying to get lock B..." << std::endl;
+        if (VERBOSE) std::cout << "[Thread] A trying to get lock B..." << std::endl;
         
         // Check for timeout
         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::steady_clock::now() - start).count();
         if (elapsed > 5 || g_should_exit.load()) {
-            std::cout << "[Thread] A timed out." << std::endl;
+            if (VERBOSE) std::cout << "[Thread] A timed out." << std::endl;
             g_mutex_a.unlock();
             return;
         }
         
         if (g_mutex_b.try_lock()) {
-            std::cout << "[Thread] A acquired both locks." << std::endl;
+            if (VERBOSE) std::cout << "[Thread] A acquired both locks." << std::endl;
             g_mutex_b.unlock();
         } else {
-            std::cout << "[Thread] A couldn't get lock B." << std::endl;
+            if (VERBOSE) std::cout << "[Thread] A couldn't get lock B." << std::endl;
         }
         g_mutex_a.unlock();
     } else {
-        std::cout << "[Thread] A couldn't get lock A." << std::endl;
+        if (VERBOSE) std::cout << "[Thread] A couldn't get lock A." << std::endl;
     }
 }
 
 void deadlock_thread_b() {
     if (g_should_exit.load()) return;
-    std::cout << "[Thread] Deadlock thread B starting..." << std::endl;
+    if (VERBOSE) std::cout << "[Thread] Deadlock thread B starting..." << std::endl;
     
     auto start = std::chrono::steady_clock::now();
     if (g_mutex_b.try_lock()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        std::cout << "[Thread] B trying to get lock A..." << std::endl;
+        if (VERBOSE) std::cout << "[Thread] B trying to get lock A..." << std::endl;
         
         // Check for timeout
         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::steady_clock::now() - start).count();
         if (elapsed > 5 || g_should_exit.load()) {
-            std::cout << "[Thread] B timed out." << std::endl;
+            if (VERBOSE) std::cout << "[Thread] B timed out." << std::endl;
             g_mutex_b.unlock();
             return;
         }
         
         if (g_mutex_a.try_lock()) {
-            std::cout << "[Thread] B acquired both locks." << std::endl;
+            if (VERBOSE) std::cout << "[Thread] B acquired both locks." << std::endl;
             g_mutex_a.unlock();
         } else {
-            std::cout << "[Thread] B couldn't get lock A." << std::endl;
+            if (VERBOSE) std::cout << "[Thread] B couldn't get lock A." << std::endl;
         }
         g_mutex_b.unlock();
     } else {
-        std::cout << "[Thread] B couldn't get lock B." << std::endl;
+        if (VERBOSE) std::cout << "[Thread] B couldn't get lock B." << std::endl;
     }
 }
 
@@ -317,15 +317,15 @@ namespace ProducerConsumerChaos {
 
 void run_data_race() {
     g_shared_racy_data = 0;
-    std::cout << "[Thread] Spawning threads for data race..." << std::endl;
+    if (VERBOSE) std::cout << "[Thread] Spawning threads for data race..." << std::endl;
     std::vector<std::thread> threads;
     for (int i = 0; i < 4; ++i) threads.emplace_back(racy_thread_func);
     for (auto& t : threads) t.join();
-    std::cout << "[Thread] Final racy value (expected " << 200000 * 4 << "): " << g_shared_racy_data << std::endl;
+    if (VERBOSE) std::cout << "[Thread] Final racy value (expected " << 200000 * 4 << "): " << g_shared_racy_data << std::endl;
 }
 
 void run_deadlock() {
-    std::cout << "[Thread] Spawning threads for deadlock prevention test..." << std::endl;
+    if (VERBOSE) std::cout << "[Thread] Spawning threads for deadlock prevention test..." << std::endl;
     std::vector<std::thread> threads;
     threads.emplace_back(deadlock_thread_a);
     threads.emplace_back(deadlock_thread_b);
@@ -339,14 +339,14 @@ void run_deadlock() {
         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::steady_clock::now() - start).count();
         if (elapsed > 10) { // 10 second timeout
-            std::cout << "[Thread] Deadlock test timed out, continuing..." << std::endl;
+            if (VERBOSE) std::cout << "[Thread] Deadlock test timed out, continuing..." << std::endl;
             break;
         }
     }
 }
 
 void run_producer_consumer() {
-    std::cout << "[Thread] Running producer-consumer chaos..." << std::endl;
+    if (VERBOSE) std::cout << "[Thread] Running producer-consumer chaos..." << std::endl;
     ProducerConsumerChaos::g_done = false;
     std::vector<std::thread> threads;
     threads.emplace_back(ProducerConsumerChaos::producer);
@@ -356,7 +356,7 @@ void run_producer_consumer() {
 }
 
 void run() {
-    std::cout << "\n--- Running Threading Nightmare ---" << std::endl;
+    if (VERBOSE) std::cout << "\n--- Running Threading Nightmare ---" << std::endl;
     
     // Randomize the order of threading tests
     std::vector<std::function<void()>> thread_tests = {
@@ -386,7 +386,7 @@ void run() {
 namespace SyscallChaos {
 
 void run_crash_signal_test() {
-    std::cout << "[Syscall] Fork and random crash signal test..." << std::endl;
+    if (VERBOSE) std::cout << "[Syscall] Fork and random crash signal test..." << std::endl;
     
     pid_t pid = fork();
     if (pid == -1) { 
@@ -395,7 +395,7 @@ void run_crash_signal_test() {
     }
 
     if (pid == 0) { // Child process
-        std::cout << "[Child] Child process started, doing random work..." << std::endl;
+        if (VERBOSE) std::cout << "[Child] Child process started, doing random work..." << std::endl;
         
         // Child does some random computational work
         std::uniform_int_distribution<int> work_dist(1000, 5000);
@@ -411,7 +411,7 @@ void run_crash_signal_test() {
             }
         }
         
-        std::cout << "[Child] Child completed work, sum = " << sum << std::endl;
+        if (VERBOSE) std::cout << "[Child] Child completed work, sum = " << sum << std::endl;
         _exit(0);
     } else { // Parent process
         // Give child a moment to start its work
@@ -422,7 +422,7 @@ void run_crash_signal_test() {
         std::uniform_int_distribution<size_t> signal_dist(0, crash_signals.size() - 1);
         int chosen_signal = crash_signals[signal_dist(g_rng)];
         
-        std::cout << "[Parent] Sending signal " << chosen_signal << " to child process " << pid << std::endl;
+        if (VERBOSE) std::cout << "[Parent] Sending signal " << chosen_signal << " to child process " << pid << std::endl;
         
         if (kill(pid, chosen_signal) == -1) {
             perror("kill");
@@ -433,9 +433,9 @@ void run_crash_signal_test() {
         pid_t result = waitpid(pid, &status, 0);
         if (result != -1) {
             if (WIFEXITED(status)) {
-                std::cout << "[Parent] Child exited normally with code " << WEXITSTATUS(status) << std::endl;
+                if (VERBOSE) std::cout << "[Parent] Child exited normally with code " << WEXITSTATUS(status) << std::endl;
             } else if (WIFSIGNALED(status)) {
-                std::cout << "[Parent] Child terminated by signal " << WTERMSIG(status) << std::endl;
+                if (VERBOSE) std::cout << "[Parent] Child terminated by signal " << WTERMSIG(status) << std::endl;
             }
         } else {
             perror("waitpid");
@@ -444,7 +444,7 @@ void run_crash_signal_test() {
 }
 
 void run() {
-    std::cout << "\n--- Running IPC and Syscall Chaos ---" << std::endl;
+    if (VERBOSE) std::cout << "\n--- Running IPC and Syscall Chaos ---" << std::endl;
     
     // Randomize the order of syscall tests
     std::vector<std::function<void()>> syscall_tests = {
@@ -472,14 +472,14 @@ void run() {
                 close(pipe_fd[1]);
                 char buffer[128] = {0};
                 read(pipe_fd[0], buffer, sizeof(buffer) - 1);
-                std::cout << "[IPC] Parent received: '" << buffer << "'" << std::endl;
+                if (VERBOSE) std::cout << "[IPC] Parent received: '" << buffer << "'" << std::endl;
                 close(pipe_fd[0]);
                 wait(NULL);
             }
         },
         run_crash_signal_test,
         []() {
-            std::cout << "[Syscall] Leaking a file descriptor..." << std::endl;
+            if (VERBOSE) std::cout << "[Syscall] Leaking a file descriptor..." << std::endl;
             // ERROR: This file descriptor will be leaked.
             (void)open("/dev/null", O_RDONLY);
         }
@@ -506,7 +506,7 @@ namespace AlgorithmStress {
 
 // --- 4a: Graph algorithm (Dijkstra's) ---
 void run_dijkstra() {
-    std::cout << "[Algo] Running Dijkstra's Algorithm..." << std::endl;
+    if (VERBOSE) std::cout << "[Algo] Running Dijkstra's Algorithm..." << std::endl;
     int num_vertices = 500;
     using Edge = std::pair<int, int>;
     std::vector<std::list<Edge>> adj(num_vertices);
@@ -565,14 +565,14 @@ namespace NQueens {
 }
 void run_n_queens() {
     int n = 12; // N=12 is substantially more work than N=9
-    std::cout << "[Algo] Running N-Queens Solver (N="<< n << ")..." << std::endl;
+    if (VERBOSE) std::cout << "[Algo] Running N-Queens Solver (N="<< n << ")..." << std::endl;
     std::vector<int> board(n);
     NQueens::solve(0, board); // Stresses call stack
 }
 
 // --- 4c: Numerical Computation (Matrix Multiplication) ---
 void run_matrix_multiplication() {
-    std::cout << "[Algo] Running Matrix Multiplication..." << std::endl;
+    if (VERBOSE) std::cout << "[Algo] Running Matrix Multiplication..." << std::endl;
     int size = 250;
     std::vector<std::vector<int>> a(size, std::vector<int>(size));
     std::vector<std::vector<int>> b(size, std::vector<int>(size));
@@ -597,7 +597,7 @@ void run_tsp();
 void run_suffix_array();
 
 void run() {
-    std::cout << "\n--- Running Advanced Algorithm Stress Test ---" << std::endl;
+    if (VERBOSE) std::cout << "\n--- Running Advanced Algorithm Stress Test ---" << std::endl;
     
     // Randomize the order of algorithm execution
     std::vector<std::function<void()>> algorithms = {
@@ -728,7 +728,7 @@ namespace RedBlackTree {
 }
 
 void run_red_black_tree() {
-    std::cout << "[Algo] Running Red-Black Tree operations..." << std::endl;
+    if (VERBOSE) std::cout << "[Algo] Running Red-Black Tree operations..." << std::endl;
     RedBlackTree::RBTree tree;
     std::uniform_int_distribution<int> dist(1, 10000);
     for (int i = 0; i < 1000; ++i) {
@@ -762,7 +762,7 @@ namespace FFT {
 }
 
 void run_fft() {
-    std::cout << "[Algo] Running Fast Fourier Transform..." << std::endl;
+    if (VERBOSE) std::cout << "[Algo] Running Fast Fourier Transform..." << std::endl;
     std::vector<std::complex<double>> signal(1024);
     std::uniform_real_distribution<double> dist(-1.0, 1.0);
     
@@ -775,7 +775,7 @@ void run_fft() {
 
 // --- 4f: Traveling Salesman Problem (Dynamic Programming) ---
 void run_tsp() {
-    std::cout << "[Algo] Running TSP with Dynamic Programming..." << std::endl;
+    if (VERBOSE) std::cout << "[Algo] Running TSP with Dynamic Programming..." << std::endl;
     const int n = 15; // Small enough to complete in reasonable time
     std::vector<std::vector<int>> dist(n, std::vector<int>(n));
     
@@ -806,7 +806,7 @@ void run_tsp() {
 
 // --- 4g: Suffix Array Construction ---
 void run_suffix_array() {
-    std::cout << "[Algo] Running Suffix Array construction..." << std::endl;
+    if (VERBOSE) std::cout << "[Algo] Running Suffix Array construction..." << std::endl;
     std::string text = "banana$";
     for (int i = 0; i < 100; ++i) {
         text += "abracadabra" + std::to_string(i);
@@ -848,7 +848,7 @@ namespace ProfilingTargets {
 
 // --- 5a: Heap profiler target (Massif) ---
 void run_massif_sawtooth() {
-    std::cout << "[Profile] Running Massif 'sawtooth' heap stress..." << std::endl;
+    if (VERBOSE) std::cout << "[Profile] Running Massif 'sawtooth' heap stress..." << std::endl;
     std::vector<int*> memory_chunks;
     
     // 5 peaks of memory allocation
@@ -897,7 +897,7 @@ namespace CacheStress {
 }
 
 void run_cache_stress() {
-    std::cout << "[Profile] Running Cachegrind stress (naive vs. tiled)..." << std::endl;
+    if (VERBOSE) std::cout << "[Profile] Running Cachegrind stress (naive vs. tiled)..." << std::endl;
     // Initializing matrix data once
     for(int i=0; i<CacheStress::SIZE; ++i) for(int j=0; j<CacheStress::SIZE; ++j) CacheStress::matrix[i][j] = i*j;
 
@@ -910,7 +910,7 @@ void run_cache_stress() {
 }
 
 void run() {
-    std::cout << "\n--- Running Advanced Profiling Targets ---" << std::endl;
+    if (VERBOSE) std::cout << "\n--- Running Advanced Profiling Targets ---" << std::endl;
     run_massif_sawtooth();
     run_cache_stress();
 }
@@ -951,25 +951,25 @@ int main(int argc, char* argv[]) {
     setrlimit(RLIMIT_CORE, &core_limit);
     
     const long long RUN_DURATION_SECONDS = 120; // Reduced to 2 minutes for safety
-    std::cout << "Starting ultimate Valgrind stress test..." << std::endl;
-    std::cout << "Target duration: " << RUN_DURATION_SECONDS << " seconds." << std::endl;
-    std::cout << "Core dumps disabled for safety." << std::endl;
+    if (VERBOSE) std::cout << "Starting ultimate Valgrind stress test..." << std::endl;
+    if (VERBOSE) std::cout << "Target duration: " << RUN_DURATION_SECONDS << " seconds." << std::endl;
+    if (VERBOSE) std::cout << "Core dumps disabled for safety." << std::endl;
 
     // Set up signal handler for graceful exit
     signal(SIGINT, [](int) { 
-        std::cout << "\nReceived interrupt signal, shutting down gracefully..." << std::endl;
+        if (VERBOSE) std::cout << "\nReceived interrupt signal, shutting down gracefully..." << std::endl;
         g_should_exit.store(true); 
     });
     
     // Handle segmentation faults gracefully
     signal(SIGSEGV, [](int) {
-        std::cout << "\nSegmentation fault caught, continuing with next test..." << std::endl;
+        if (VERBOSE) std::cout << "\nSegmentation fault caught, continuing with next test..." << std::endl;
         g_should_exit.store(true);
     });
     
     // Handle aborts gracefully
     signal(SIGABRT, [](int) {
-        std::cout << "\nAbort signal caught, continuing with next test..." << std::endl;
+        if (VERBOSE) std::cout << "\nAbort signal caught, continuing with next test..." << std::endl;
         g_should_exit.store(true);
     });
 
@@ -985,7 +985,7 @@ int main(int argc, char* argv[]) {
     if (argc > 1) {
         std::string arg = argv[1];
         if (test_suites.count(arg)) {
-            std::cout << "Running only the '" << arg << "' test suite." << std::endl;
+            if (VERBOSE) std::cout << "Running only the '" << arg << "' test suite." << std::endl;
             test_suites[arg]();
         } else {
             std::cerr << "Unknown test suite: " << arg << std::endl;
@@ -993,7 +993,7 @@ int main(int argc, char* argv[]) {
             return 1;
         }
     } else {
-        std::cout << "Running randomized test suites in a time-limited loop." << std::endl;
+        if (VERBOSE) std::cout << "Running randomized test suites in a time-limited loop." << std::endl;
         auto start_time = std::chrono::steady_clock::now();
         int cycle = 0;
         const int MAX_CYCLES = 50; // Hard limit to prevent infinite loops
@@ -1003,13 +1003,13 @@ int main(int argc, char* argv[]) {
             long long elapsed_seconds = std::chrono::duration_cast<std::chrono::seconds>(current_time - start_time).count();
             
             if (elapsed_seconds >= RUN_DURATION_SECONDS) {
-                std::cout << "\nTime limit reached, exiting..." << std::endl;
+                if (VERBOSE) std::cout << "\nTime limit reached, exiting..." << std::endl;
                 break;
             }
 
-            std::cout << "\n=========================================" << std::endl;
-            std::cout << "Starting Test Cycle " << ++cycle << "/" << MAX_CYCLES << " (Elapsed: " << elapsed_seconds << "s)" << std::endl;
-            std::cout << "=========================================\n" << std::endl;
+            if (VERBOSE) std::cout << "\n=========================================" << std::endl;
+            if (VERBOSE) std::cout << "Starting Test Cycle " << ++cycle << "/" << MAX_CYCLES << " (Elapsed: " << elapsed_seconds << "s)" << std::endl;
+            if (VERBOSE) std::cout << "=========================================\n" << std::endl;
             
             // Add random delay between cycles
             std::uniform_int_distribution<int> delay_dist(100, 1000);
@@ -1019,11 +1019,11 @@ int main(int argc, char* argv[]) {
         }
         
         if (cycle >= MAX_CYCLES) {
-            std::cout << "\nMaximum cycle limit reached, exiting..." << std::endl;
+            if (VERBOSE) std::cout << "\nMaximum cycle limit reached, exiting..." << std::endl;
         }
     }
 
     g_should_exit.store(true);
-    std::cout << "\nUltimate stress test finished gracefully." << std::endl;
+    if (VERBOSE) std::cout << "\nUltimate stress test finished gracefully." << std::endl;
     return 0;
 }

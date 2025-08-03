@@ -217,15 +217,18 @@ PGO_DATA_DIR="${BUILD_DIR}/pgo-data"
 mkdir -p "${PGO_DATA_DIR}"
 
 BASE_FLAGS_INSTRUMENT="-O3 -pipe -fp-model=fast -march=native -static -ffast-math -funroll-loops -finline-functions -inline-level=2 -fvectorize -vec"
-PGO_GEN_FLAGS="-fprofile-instr-generate" # Path will be set by LLVM_PROFILE_FILE
-export CFLAGS="${BASE_FLAGS_INSTRUMENT} ${PGO_GEN_FLAGS}"
-export CXXFLAGS="${BASE_FLAGS_INSTRUMENT} ${PGO_GEN_FLAGS}"
+PGO_GEN_FLAGS="-fprofile-instr-generate"
 
-./configure --prefix="${INSTRUMENTED_INSTALL_DIR}"
+### CHANGED ###
+# Pass flags directly to configure instead of exporting them.
+# This ensures configure's internal tests use the correct flags.
+./configure --prefix="${INSTRUMENTED_INSTALL_DIR}" \
+    CFLAGS="${BASE_FLAGS_INSTRUMENT} ${PGO_GEN_FLAGS}" \
+    CXXFLAGS="${BASE_FLAGS_INSTRUMENT} ${PGO_GEN_FLAGS}"
+
 make -j"$(nproc)" V=1
 make install -j"$(nproc)" V=1
 
-unset CFLAGS CXXFLAGS
 INSTRUMENTED_VALGRIND="${INSTRUMENTED_INSTALL_DIR}/bin/valgrind"
 
 
@@ -238,14 +241,14 @@ echo "Compiling the benchmark code..."
 curl -s -L -O "${PGO_BENCHMARK_URL}"
 ${CXX} -O3 -ipo -static -g3 -flto ${COMPILER_VERBOSE} -o "${PGO_BENCHMARK_EXE}" "${PGO_BENCHMARK_SRC}"
 
-# --- MODIFICATION 1: Use %p to create unique profile files for each process ---
+# --- Use %p to create unique profile files for each process ---
 export LLVM_PROFILE_FILE="${PGO_DATA_DIR}/default-%p.profraw"
 echo "Running benchmark with instrumented Valgrind to generate PGO data..."
 echo "Timing information for the INSTRUMENTED run:"
-time "${INSTRUMENTED_VALGRIND}" ${VALGRIND_PGO_FLAGS} ./"${PGO_BENCHMARK_EXE}" 2>/dev/null
+time "${INSTRUMENTED_VALGRIND}" ${VALGRIND_PGO_FLAGS} ./"${PGO_BENCHMARK_EXE}"
 
 echo "Converting profile data from .profraw to .profdata format..."
-# --- MODIFICATION 2: Use a wildcard to merge all generated .profraw files ---
+# --- Use a wildcard to merge all generated .profraw files ---
 llvm-profdata merge -output="${PGO_DATA_DIR}/default.profdata" "${PGO_DATA_DIR}/default-"*.profraw
 echo "Profile data conversion completed."
 
@@ -277,25 +280,20 @@ tar -xjf "${TARBALL_NAME}"
 mv "valgrind-${VALGRIND_VERSION}" "valgrind-pgo-optimized"
 cd "valgrind-pgo-optimized"
 
-echo "Configuring LLVM toolchain for LTO optimization..."
-export AR="${INTEL_COMPILER_DIR}/llvm-ar"
-export RANLIB="${INTEL_COMPILER_DIR}/llvm-ranlib"
-export LTO_AR="${INTEL_COMPILER_DIR}/llvm-ar"
-export LTO_RANLIB="${INTEL_COMPILER_DIR}/llvm-ranlib"
-export LDFLAGS="-fuse-ld=lld"
-echo "Using LLVM linker (ld.lld) for LTO"
-
-echo "LLVM toolchain configured successfully."
-
 BASE_FLAGS_OPTIMIZED="-O3 -pipe -fp-model=fast -march=native -static -ffast-math -funroll-loops -finline-functions -inline-level=2 -fvectorize -vec -flto=full"
 PGO_USE_FLAGS="-fprofile-instr-use=${PGO_DATA_DIR}/default.profdata"
-export CFLAGS="${BASE_FLAGS_OPTIMIZED} ${PGO_USE_FLAGS}"
-export CXXFLAGS="${BASE_FLAGS_OPTIMIZED} ${PGO_USE_FLAGS}"
 
-./configure --prefix="${INSTALL_PREFIX}" --enable-lto
+### CHANGED ###
+# Pass all flags and toolchain variables directly to configure.
+# This is critical for it to correctly detect LTO support.
+./configure --prefix="${INSTALL_PREFIX}" --enable-lto \
+    CFLAGS="${BASE_FLAGS_OPTIMIZED} ${PGO_USE_FLAGS}" \
+    CXXFLAGS="${BASE_FLAGS_OPTIMIZED} ${PGO_USE_FLAGS}" \
+    LDFLAGS="-fuse-ld=lld" \
+    AR="${INTEL_COMPILER_DIR}/llvm-ar" \
+    RANLIB="${INTEL_COMPILER_DIR}/llvm-ranlib"
+
 make -j"$(nproc)" V=1
-
-unset CFLAGS CXXFLAGS AR RANLIB LTO_AR LTO_RANLIB LDFLAGS
 
 
 echo "========================================================================"
@@ -320,11 +318,10 @@ if [ -f "${FINAL_VALGRIND_PATH}" ]; then
 
     echo ""
     echo "LTO verification: Checking if build used LLVM tools..."
-    if grep -q "llvm" "${BUILD_DIR}/valgrind-pgo-optimized/config.log" 2>/dev/null; then
-        echo "✓ SUCCESS: Build configuration shows LLVM tools were used"
-        echo "LTO should be properly enabled"
+    if grep -q "checking if toolchain accepts lto... yes" "${BUILD_DIR}/valgrind-pgo-optimized/config.log" 2>/dev/null; then
+        echo "✓ SUCCESS: Build configuration shows LTO was accepted."
     else
-        echo "⚠ WARNING: Build may not have used LLVM tools optimally"
+        echo "⚠ WARNING: LTO check failed in configure. LTO may not be properly enabled."
     fi
 
     echo ""
@@ -361,7 +358,7 @@ echo "Stage 10: Final Test: Run Optimized Valgrind and Compare Timings"
 echo "========================================================================"
 cd "${BUILD_DIR}"
 echo "Timing information for the FINAL OPTIMIZED run:"
-time "${FINAL_VALGRIND_PATH}" ${VALGRIND_PGO_FLAGS} ./"${PGO_BENCHMARK_EXE}" 2>/dev/null
+time "${FINAL_VALGRIND_PATH}" ${VALGRIND_PGO_FLAGS} ./"${PGO_BENCHMARK_EXE}"
 
 
 echo "========================================================================"

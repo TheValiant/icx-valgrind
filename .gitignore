@@ -1,0 +1,56 @@
+# Log files
+*.log
+*.logs
+*_log
+*_logs
+build_bench_logs.txt
+valgrind_build_*.log
+
+# Build artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+a.out
+core
+core.*
+
+# Temporary build directories
+/tmp/
+**/tmp/
+build/
+dist/
+
+# PGO data files
+*.profraw
+*.profdata
+default.profraw
+default.profdata
+
+# Backup files
+*~
+*.bak
+*.backup
+*.orig
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Compressed files (except the source tarballs we want to keep)
+# *.tar.gz
+# *.tar.bz2
+# *.zip

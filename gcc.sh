@@ -1,14 +1,14 @@
 #!/bin/bash
 #
 # This script performs a 2-stage Profile-Guided Optimization (PGO) build
-# of Valgrind with Link Time Optimization (LTO). It prioritizes the Intel 
-# oneAPI compilers (icx/icpx) with proper LLVM toolchain integration for 
-# optimal LTO performance, 
+# of Valgrind with Link Time Optimization (LTO), specifically tailored for
+# the GCC toolchain. It will automatically detect and use gcc-15 if available,
+# otherwise falling back to the system's default GCC.
 #
 # Key optimizations:
 # - Profile-Guided Optimization (PGO) for runtime optimization
-# - Link Time Optimization (LTO) with LLVM toolchain integration
-# - Intel-specific optimization flags and vectorization
+# - Link Time Optimization (LTO)
+# - Aggressive GCC optimization flags and native architecture tuning
 # - Static linking for better performance
 #
 # It is designed to be idempotent and safe to re-run.
@@ -21,8 +21,8 @@ set -o pipefail # The return value of a pipeline is the status of the last comma
 set -x    # Print commands and their arguments as they are executed.
 
 # --- Logging Setup ---
-LOG_FILE="$(pwd)/valgrind_build_$(date +%Y%m%d_%H%M%S).log"
-echo "Starting Valgrind PGO build - logging to: ${LOG_FILE}"
+LOG_FILE="$(pwd)/valgrind_build_gcc_$(date +%Y%m%d_%H%M%S).log"
+echo "Starting Valgrind PGO build with GCC - logging to: ${LOG_FILE}"
 # Redirect all output to both terminal and log file
 exec > >(tee -a "${LOG_FILE}") 2>&1
 
@@ -71,12 +71,10 @@ PGO_BENCHMARK_URL="https://raw.githubusercontent.com/TheValiant/icx-valgrind/mai
 PGO_BENCHMARK_SRC="PGO_benchmark.cpp"
 PGO_BENCHMARK_EXE="pgo_benchmark"
 
-BUILD_DIR="/tmp/valgrind-pgo-build"
-# Use a standard local prefix for a clean installation
+BUILD_DIR="/tmp/valgrind-pgo-build-gcc"
 INSTALL_PREFIX="${HOME}/.local"
 FINAL_VALGRIND_PATH="${INSTALL_PREFIX}/bin/valgrind"
 
-# Flags to use for both PGO generation and the final performance test
 VALGRIND_PGO_FLAGS="-s \
 --leak-resolution=high \
 --track-origins=yes \
@@ -101,7 +99,6 @@ echo "========================================================================"
 echo "Initial Setup and Directory Creation"
 echo "========================================================================"
 mkdir -p "${BUILD_DIR}"
-# Also create the bin directory in the install prefix
 mkdir -p "${INSTALL_PREFIX}/bin"
 cd "${BUILD_DIR}"
 echo "Build directory: ${BUILD_DIR}"
@@ -110,33 +107,28 @@ echo "Installation prefix: ${INSTALL_PREFIX}"
 echo "========================================================================"
 echo "Stage 0: Pre-flight Compiler and Sanity Check"
 echo "========================================================================"
-INTEL_SETVARS_SCRIPT="/opt/intel/oneapi/setvars.sh"
 
-if [ -f "$INTEL_SETVARS_SCRIPT" ]; then
-    echo "Intel oneAPI environment found. Sourcing setvars.sh..."
-    set +x
-    export OCL_ICD_FILENAMES=""
-    export SETVARS_ARGS="--force"
-    set +u
-    # shellcheck source=/opt/intel/oneapi/setvars.sh
-    source "$INTEL_SETVARS_SCRIPT"
-    set -u
-    unset SETVARS_ARGS
-    set -x
-
-    export CC=icx
-    export CXX=icpx
-    export I_MPI_CC=icx
-    export I_MPI_CXX=icpx
-    echo "Using Intel compilers: $(which icx) and $(which icpx)"
-
-    echo "Performing a pre-flight check to ensure C++ compiler can build the benchmark..."
-    curl -L -O ${CURL_VERBOSE} "${PGO_BENCHMARK_URL}"
-    # Test compilation by outputting to /dev/null
-    ${CXX} -O3 -ipo -static -g3 -flto ${COMPILER_VERBOSE} -o /dev/null "${PGO_BENCHMARK_SRC}"
-    rm -f "${PGO_BENCHMARK_SRC}"
-    echo "Pre-flight check successful."
+if command -v gcc-15 &> /dev/null && command -v g++-15 &> /dev/null; then
+    echo "Found gcc-15 and g++-15. Setting them as the default compilers."
+    export CC=gcc-15
+    export CXX=g++-15
+else
+    echo "gcc-15 not found. Falling back to system default gcc/g++."
+    export CC=gcc
+    export CXX=g++
 fi
+
+echo "Using C Compiler: $(which ${CC})"
+echo "Using C++ Compiler: $(which ${CXX})"
+${CC} --version
+${CXX} --version
+
+echo "Performing a pre-flight check to ensure C++ compiler can build the benchmark..."
+curl -L -O ${CURL_VERBOSE} "${PGO_BENCHMARK_URL}"
+# Test compilation by outputting to /dev/null
+${CXX} -O3 -static -flto ${COMPILER_VERBOSE} -o /dev/null "${PGO_BENCHMARK_SRC}"
+rm -f "${PGO_BENCHMARK_SRC}"
+echo "Pre-flight check successful."
 
 
 echo "========================================================================"
@@ -160,7 +152,7 @@ echo "SHA1 hash verified successfully."
 
 
 echo "========================================================================"
-echo "Stage 3: PGO Build - Phase 1 (Instrumentation with LTO preparation)"
+echo "Stage 3: PGO Build - Phase 1 (Instrumentation)"
 echo "========================================================================"
 if [ -d "valgrind-pgo-instrumented" ]; then
     rm -rf "valgrind-pgo-instrumented"
@@ -173,35 +165,17 @@ INSTRUMENTED_INSTALL_DIR="${BUILD_DIR}/temp_install"
 PGO_DATA_DIR="${BUILD_DIR}/pgo-data"
 mkdir -p "${PGO_DATA_DIR}"
 
-# Configure LLVM toolchain for both phases to ensure consistency
-echo "Configuring LLVM toolchain for instrumentation phase..."
-INTEL_COMPILER_DIR="/opt/intel/oneapi/compiler/2025.2/bin/compiler"
-if [ -f "${INTEL_COMPILER_DIR}/llvm-ar" ] && [ -f "${INTEL_COMPILER_DIR}/llvm-ranlib" ]; then
-    export AR="${INTEL_COMPILER_DIR}/llvm-ar"
-    export RANLIB="${INTEL_COMPILER_DIR}/llvm-ranlib"
-    export LTO_AR="${INTEL_COMPILER_DIR}/llvm-ar"
-    export LTO_RANLIB="${INTEL_COMPILER_DIR}/llvm-ranlib"
-    
-    if [ -f "${INTEL_COMPILER_DIR}/ld.lld" ]; then
-        export LDFLAGS="-fuse-ld=lld"
-    else
-        export LDFLAGS="-fuse-ld=gold"
-    fi
-    echo "LLVM toolchain configured for instrumentation phase"
-else
-    echo "WARNING: LLVM tools not found. Using system tools for instrumentation."
-fi
-
-BASE_FLAGS="-O3 -flto -pipe -fp-model=fast -march=native -static -ffast-math -funroll-loops -finline-functions -inline-level=2 -fvectorize -vec"
-PGO_GEN_FLAGS="-fprofile-instr-generate=${PGO_DATA_DIR}/default.profraw"
+BASE_FLAGS="-O3 -pipe -march=native -static -ffast-math -funroll-loops -flto=auto -fno-semantic-interposition"
+PGO_GEN_FLAGS="-fprofile-generate=${PGO_DATA_DIR}"
 export CFLAGS="${BASE_FLAGS} ${PGO_GEN_FLAGS}"
 export CXXFLAGS="${BASE_FLAGS} ${PGO_GEN_FLAGS}"
 
+# GCC LTO doesn't require special AR/RANLIB, but --enable-lto is still needed
 ./configure --prefix="${INSTRUMENTED_INSTALL_DIR}" --enable-lto
 make -j"$(nproc)" V=1
 make install -j"$(nproc)" V=1
 
-unset CFLAGS CXXFLAGS AR RANLIB LTO_AR LTO_RANLIB LDFLAGS
+unset CFLAGS CXXFLAGS
 INSTRUMENTED_VALGRIND="${INSTRUMENTED_INSTALL_DIR}/bin/valgrind"
 
 
@@ -215,23 +189,17 @@ rm -f "${PGO_BENCHMARK_SRC}"
 curl -L -O ${CURL_VERBOSE} "${PGO_BENCHMARK_URL}"
 
 echo "Compiling the benchmark code..."
-${CXX} -O3 -ipo -static -g3 -flto ${COMPILER_VERBOSE} -o "${PGO_BENCHMARK_EXE}" "${PGO_BENCHMARK_SRC}"
+${CXX} -O3 -static -flto ${COMPILER_VERBOSE} -o "${PGO_BENCHMARK_EXE}" "${PGO_BENCHMARK_SRC}"
 
-export LLVM_PROFILE_FILE="${PGO_DATA_DIR}/default.profraw"
 echo "Running benchmark with instrumented Valgrind to generate PGO data..."
 echo "Timing information for the INSTRUMENTED run:"
 time "${INSTRUMENTED_VALGRIND}" ${VALGRIND_PGO_FLAGS} ./"${PGO_BENCHMARK_EXE}"
 
-echo "Converting profile data from .profraw to .profdata format..."
-llvm-profdata merge -output="${PGO_DATA_DIR}/default.profdata" "${PGO_DATA_DIR}/default.profraw"
-echo "Profile data conversion completed."
-
-unset LLVM_PROFILE_FILE
-echo "Profile data has been generated."
+echo "Profile data has been generated in ${PGO_DATA_DIR}"
 
 
 echo "========================================================================"
-echo "Stage 5: PGO Build - Phase 2 (Optimized Recompilation with LTO)"
+echo "Stage 5: PGO Build - Phase 2 (Optimized Recompilation)"
 echo "========================================================================"
 if [ -d "valgrind-pgo-optimized" ]; then
     rm -rf "valgrind-pgo-optimized"
@@ -240,44 +208,14 @@ tar -xjf "${TARBALL_NAME}"
 mv "valgrind-${VALGRIND_VERSION}" "valgrind-pgo-optimized"
 cd "valgrind-pgo-optimized"
 
-# Configure LLVM toolchain for proper LTO support with Intel icx
-echo "Configuring LLVM toolchain for LTO optimization..."
-INTEL_COMPILER_DIR="/opt/intel/oneapi/compiler/2025.2/bin/compiler"
-if [ -f "${INTEL_COMPILER_DIR}/llvm-ar" ] && [ -f "${INTEL_COMPILER_DIR}/llvm-ranlib" ]; then
-    export AR="${INTEL_COMPILER_DIR}/llvm-ar"
-    export RANLIB="${INTEL_COMPILER_DIR}/llvm-ranlib"
-    export LTO_AR="${INTEL_COMPILER_DIR}/llvm-ar"
-    export LTO_RANLIB="${INTEL_COMPILER_DIR}/llvm-ranlib"
-    
-    # Use LLVM linker if available, otherwise fall back to gold linker
-    if [ -f "${INTEL_COMPILER_DIR}/ld.lld" ]; then
-        export LDFLAGS="-fuse-ld=lld"
-        echo "Using LLVM linker (ld.lld) for LTO"
-    else
-        export LDFLAGS="-fuse-ld=gold"
-        echo "Using gold linker as fallback for LTO"
-    fi
-    
-    echo "LLVM toolchain configured successfully:"
-    echo "  AR: ${AR}"
-    echo "  RANLIB: ${RANLIB}"
-    echo "  LTO_AR: ${LTO_AR}"
-    echo "  LTO_RANLIB: ${LTO_RANLIB}"
-    echo "  LDFLAGS: ${LDFLAGS}"
-else
-    echo "WARNING: LLVM tools not found in Intel oneAPI. Falling back to system tools."
-    echo "LTO may not work optimally with this configuration."
-fi
-
-PGO_USE_FLAGS="-fprofile-instr-use=${PGO_DATA_DIR}/default.profdata"
+PGO_USE_FLAGS="-fprofile-use=${PGO_DATA_DIR} -fprofile-correction"
 export CFLAGS="${BASE_FLAGS} ${PGO_USE_FLAGS}"
 export CXXFLAGS="${BASE_FLAGS} ${PGO_USE_FLAGS}"
 
-# Configure to install to the final destination with proper LTO support
 ./configure --prefix="${INSTALL_PREFIX}" --enable-lto
 make -j"$(nproc)" V=1
 
-unset CFLAGS CXXFLAGS AR RANLIB LTO_AR LTO_RANLIB LDFLAGS
+unset CFLAGS CXXFLAGS
 
 
 echo "========================================================================"
@@ -290,9 +228,8 @@ make install -j"$(nproc)" V=1
 echo "========================================================================"
 echo "Stage 7: LTO Verification"
 echo "========================================================================"
-echo "Verifying that LTO was properly applied to the final binary..."
+echo "Verifying that the final binary was built correctly..."
 
-# Check if the binary was built with LTO
 if [ -f "${FINAL_VALGRIND_PATH}" ]; then
     echo "Binary size analysis:"
     ls -lh "${FINAL_VALGRIND_PATH}"
@@ -300,16 +237,6 @@ if [ -f "${FINAL_VALGRIND_PATH}" ]; then
     echo ""
     echo "Checking compiler information in binary:"
     readelf -p .comment "${FINAL_VALGRIND_PATH}" 2>/dev/null | head -5 || echo "Could not read compiler info"
-    
-    echo ""
-    echo "LTO verification: Checking if build used LLVM tools..."
-    if grep -q "llvm" "${BUILD_DIR}/valgrind-pgo-optimized/config.log" 2>/dev/null; then
-        echo "✓ SUCCESS: Build configuration shows LLVM tools were used"
-        echo "LTO should be properly enabled"
-    else
-        echo "⚠ WARNING: Build may not have used LLVM tools optimally"
-        echo "LTO effectiveness may be limited"
-    fi
     
     echo ""
     echo "Final binary information:"

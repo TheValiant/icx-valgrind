@@ -1,13 +1,13 @@
 #!/bin/bash
 #
 # This script performs a 2-stage Profile-Guided Optimization (PGO) build
-# of Valgrind with Link Time Optimization (LTO). It prioritizes the Intel 
-# oneAPI compilers (icx/icpx) with proper LLVM toolchain integration for 
-# optimal LTO performance, 
+# of Valgrind with full Link Time Optimization (LTO). It prioritizes the Intel
+# oneAPI compilers (icx/icpx) and includes extensive pre-flight checks to
+# fail early if the environment is not correctly configured.
 #
 # Key optimizations:
 # - Profile-Guided Optimization (PGO) for runtime optimization
-# - Link Time Optimization (LTO) with LLVM toolchain integration
+# - Full Link Time Optimization (LTO) applied in the final stage
 # - Intel-specific optimization flags and vectorization
 # - Static linking for better performance
 #
@@ -15,16 +15,20 @@
 #
 
 # --- Script Configuration ---
-set -e    # Exit immediately if a command exits with a non-zero status.
-set -u    # Treat unset variables as an error when substituting.
-set -o pipefail # The return value of a pipeline is the status of the last command to exit with a non-zero status.
-set -x    # Print commands and their arguments as they are executed.
+set -e
+set -u
+set -o pipefail
+set -x
 
 # --- Logging Setup ---
-LOG_FILE="$(pwd)/valgrind_build_$(date +%Y%m%d_%H%M%S).log"
+SCRIPT_CWD=$(pwd)
+LOG_FILE="${SCRIPT_CWD}/valgrind_build_$(date +%Y%m%d_%H%M%S).log"
 echo "Starting Valgrind PGO build - logging to: ${LOG_FILE}"
-# Redirect all output to both terminal and log file
 exec > >(tee -a "${LOG_FILE}") 2>&1
+
+# --- Automatic Cleanup ---
+BUILD_DIR=$(mktemp -d -t valgrind-pgo-build-XXXXXXXXXX)
+trap 'echo "Cleaning up temporary directory: ${BUILD_DIR}"; rm -rf "${BUILD_DIR}"' EXIT
 
 # --- Command Line Arguments ---
 VERBOSE=false
@@ -49,7 +53,6 @@ for arg in "$@"; do
     esac
 done
 
-# Set verbose flags based on command line argument
 if [ "$VERBOSE" = true ]; then
     CURL_VERBOSE="-v"
     TAR_VERBOSE="-v"
@@ -71,47 +74,43 @@ PGO_BENCHMARK_URL="https://raw.githubusercontent.com/TheValiant/icx-valgrind/mai
 PGO_BENCHMARK_SRC="PGO_benchmark.cpp"
 PGO_BENCHMARK_EXE="pgo_benchmark"
 
-BUILD_DIR="/tmp/valgrind-pgo-build"
-# Use a standard local prefix for a clean installation
 INSTALL_PREFIX="${HOME}/.local"
 FINAL_VALGRIND_PATH="${INSTALL_PREFIX}/bin/valgrind"
 
-# Flags to use for both PGO generation and the final performance test
 VALGRIND_PGO_FLAGS="-s \
---leak-resolution=high \
---track-origins=yes \
---num-callers=500 \
---show-mismatched-frees=yes \
---track-fds=yes \
---trace-children=yes \
---gen-suppressions=no \
---error-limit=no \
---undef-value-errors=yes \
---expensive-definedness-checks=yes \
---malloc-fill=0x41 \
---free-fill=0x42 \
---read-var-info=yes \
---keep-debuginfo=yes \
---show-realloc-size-zero=yes \
+--leak-resolution=high --track-origins=yes --num-callers=500 \
+--show-mismatched-frees=yes --track-fds=yes --trace-children=yes \
+--gen-suppressions=no --error-limit=no --undef-value-errors=yes \
+--expensive-definedness-checks=yes --malloc-fill=0x41 --free-fill=0x42 \
+--read-var-info=yes --keep-debuginfo=yes --show-realloc-size-zero=yes \
 --partial-loads-ok=no"
+
+# --- Helper Functions ---
+check_command() {
+    if ! command -v "$1" &> /dev/null; then
+        echo "ERROR: Required command '$1' not found. Please install it." >&2
+        exit 1
+    fi
+}
 
 # --- Main Script Logic ---
 
 echo "========================================================================"
-echo "Initial Setup and Directory Creation"
+echo "Stage 0: Pre-flight Checks & Environment Setup"
 echo "========================================================================"
-mkdir -p "${BUILD_DIR}"
-# Also create the bin directory in the install prefix
-mkdir -p "${INSTALL_PREFIX}/bin"
-cd "${BUILD_DIR}"
-echo "Build directory: ${BUILD_DIR}"
-echo "Installation prefix: ${INSTALL_PREFIX}"
 
-echo "========================================================================"
-echo "Stage 0: Pre-flight Compiler and Sanity Check"
-echo "========================================================================"
+echo "Checking for essential system commands..."
+check_command curl
+check_command tar
+check_command bzip2
+check_command md5sum
+check_command sha1sum
+check_command make
+check_command readelf
+check_command file
+echo "✓ All essential system commands are present."
+
 INTEL_SETVARS_SCRIPT="/opt/intel/oneapi/setvars.sh"
-
 if [ -f "$INTEL_SETVARS_SCRIPT" ]; then
     echo "Intel oneAPI environment found. Sourcing setvars.sh..."
     set +x
@@ -123,35 +122,79 @@ if [ -f "$INTEL_SETVARS_SCRIPT" ]; then
     set -u
     unset SETVARS_ARGS
     set -x
-
-    export CC=icx
-    export CXX=icpx
-    export I_MPI_CC=icx
-    export I_MPI_CXX=icpx
-    echo "Using Intel compilers: $(which icx) and $(which icpx)"
-
-    echo "Performing a pre-flight check to ensure C++ compiler can build the benchmark..."
-    curl -L -O ${CURL_VERBOSE} "${PGO_BENCHMARK_URL}"
-    # Test compilation by outputting to /dev/null
-    ${CXX} -O3 -ipo -static -g3 -flto ${COMPILER_VERBOSE} -o /dev/null "${PGO_BENCHMARK_SRC}"
-    rm -f "${PGO_BENCHMARK_SRC}"
-    echo "Pre-flight check successful."
-fi
-
-
-echo "========================================================================"
-echo "Stage 1: Download Valgrind Source"
-echo "========================================================================"
-if [ ! -f "${TARBALL_NAME}" ]; then
-    echo "Downloading Valgrind..."
-    curl -L -O ${CURL_VERBOSE} "${VALGRIND_URL}"
 else
-    echo "Valgrind tarball already exists. Skipping download."
+    echo "ERROR: Intel oneAPI setvars.sh not found at ${INTEL_SETVARS_SCRIPT}" >&2
+    exit 1
+fi
+
+echo "Verifying compiler and toolchain..."
+check_command icx
+check_command icpx
+check_command llvm-profdata
+
+INTEL_COMPILER_DIR="$(dirname "$(which icx)")/compiler"
+if [ ! -d "${INTEL_COMPILER_DIR}" ]; then
+    echo "ERROR: Could not dynamically locate Intel compiler toolchain directory at '${INTEL_COMPILER_DIR}'." >&2
+    exit 1
+fi
+echo "Dynamically located Intel compiler toolchain at: ${INTEL_COMPILER_DIR}"
+
+if [ ! -f "${INTEL_COMPILER_DIR}/llvm-ar" ] || [ ! -f "${INTEL_COMPILER_DIR}/llvm-ranlib" ] || [ ! -f "${INTEL_COMPILER_DIR}/ld.lld" ]; then
+    echo "ERROR: Essential LLVM LTO tools are missing from the Intel oneAPI installation." >&2
+    echo "Please ensure 'llvm-ar', 'llvm-ranlib', and 'ld.lld' exist in ${INTEL_COMPILER_DIR}" >&2
+    exit 1
+fi
+echo "✓ All required Intel and LLVM toolchain commands are present."
+
+export CC=icx
+export CXX=icpx
+export I_MPI_CC=icx
+export I_MPI_CXX=icpx
+
+echo "Checking directory permissions..."
+mkdir -p "${INSTALL_PREFIX}/bin"
+if ! touch "${BUILD_DIR}/.permission_test" || ! touch "${INSTALL_PREFIX}/.permission_test"; then
+    echo "ERROR: Do not have write permissions for build dir (${BUILD_DIR}) or install prefix (${INSTALL_PREFIX})." >&2
+    exit 1
+fi
+rm "${BUILD_DIR}/.permission_test" "${INSTALL_PREFIX}/.permission_test"
+echo "✓ Write permissions are OK."
+
+echo "Performing a quick compilation sanity check..."
+cd "${BUILD_DIR}"
+curl -s -L -O "${PGO_BENCHMARK_URL}"
+${CXX} -O3 -static -flto ${COMPILER_VERBOSE} -o /dev/null "${PGO_BENCHMARK_SRC}"
+rm -f "${PGO_BENCHMARK_SRC}"
+echo "✓ Pre-flight check successful. Proceeding with build."
+
+
+echo "========================================================================"
+echo "Stage 1: Download or Locate Valgrind Source"
+echo "========================================================================"
+LOCAL_TARBALL_SRC="${SCRIPT_CWD}/${TARBALL_NAME}"
+USE_LOCAL_TARBALL=false
+
+if [ -f "${LOCAL_TARBALL_SRC}" ]; then
+    echo "Found local tarball at ${LOCAL_TARBALL_SRC}. Verifying hashes..."
+    if (cd "${SCRIPT_CWD}" && echo "${EXPECTED_MD5}  ${TARBALL_NAME}" | md5sum -c - && echo "${EXPECTED_SHA1}  ${TARBALL_NAME}" | sha1sum -c -); then
+        USE_LOCAL_TARBALL=true
+    else
+        echo "⚠ WARNING: Local tarball hash mismatch. Will re-download."
+    fi
+fi
+
+cd "${BUILD_DIR}"
+if [ "$USE_LOCAL_TARBALL" = true ]; then
+    echo "✓ Hashes verified. Copying local tarball to build directory."
+    cp "${LOCAL_TARBALL_SRC}" .
+else
+    echo "Downloading Valgrind to build directory..."
+    curl -L -O ${CURL_VERBOSE} "${VALGRIND_URL}"
 fi
 
 
 echo "========================================================================"
-echo "Stage 2: Verify Hashes"
+echo "Stage 2: Verify Hashes of Build Directory Tarball"
 echo "========================================================================"
 echo "${EXPECTED_MD5}  ${TARBALL_NAME}" | md5sum -c -
 echo "MD5 hash verified successfully."
@@ -160,7 +203,7 @@ echo "SHA1 hash verified successfully."
 
 
 echo "========================================================================"
-echo "Stage 3: PGO Build - Phase 1 (Instrumentation with LTO preparation)"
+echo "Stage 3: PGO Build - Phase 1 (Instrumentation)"
 echo "========================================================================"
 if [ -d "valgrind-pgo-instrumented" ]; then
     rm -rf "valgrind-pgo-instrumented"
@@ -173,35 +216,16 @@ INSTRUMENTED_INSTALL_DIR="${BUILD_DIR}/temp_install"
 PGO_DATA_DIR="${BUILD_DIR}/pgo-data"
 mkdir -p "${PGO_DATA_DIR}"
 
-# Configure LLVM toolchain for both phases to ensure consistency
-echo "Configuring LLVM toolchain for instrumentation phase..."
-INTEL_COMPILER_DIR="/opt/intel/oneapi/compiler/2025.2/bin/compiler"
-if [ -f "${INTEL_COMPILER_DIR}/llvm-ar" ] && [ -f "${INTEL_COMPILER_DIR}/llvm-ranlib" ]; then
-    export AR="${INTEL_COMPILER_DIR}/llvm-ar"
-    export RANLIB="${INTEL_COMPILER_DIR}/llvm-ranlib"
-    export LTO_AR="${INTEL_COMPILER_DIR}/llvm-ar"
-    export LTO_RANLIB="${INTEL_COMPILER_DIR}/llvm-ranlib"
-    
-    if [ -f "${INTEL_COMPILER_DIR}/ld.lld" ]; then
-        export LDFLAGS="-fuse-ld=lld"
-    else
-        export LDFLAGS="-fuse-ld=gold"
-    fi
-    echo "LLVM toolchain configured for instrumentation phase"
-else
-    echo "WARNING: LLVM tools not found. Using system tools for instrumentation."
-fi
+BASE_FLAGS_INSTRUMENT="-O3 -pipe -fp-model=fast -march=native -static -ffast-math -funroll-loops -finline-functions -inline-level=2 -fvectorize -vec"
+PGO_GEN_FLAGS="-fprofile-instr-generate" # Path will be set by LLVM_PROFILE_FILE
+export CFLAGS="${BASE_FLAGS_INSTRUMENT} ${PGO_GEN_FLAGS}"
+export CXXFLAGS="${BASE_FLAGS_INSTRUMENT} ${PGO_GEN_FLAGS}"
 
-BASE_FLAGS="-O3 -flto -pipe -fp-model=fast -march=native -static -ffast-math -funroll-loops -finline-functions -inline-level=2 -fvectorize -vec"
-PGO_GEN_FLAGS="-fprofile-instr-generate=${PGO_DATA_DIR}/default.profraw"
-export CFLAGS="${BASE_FLAGS} ${PGO_GEN_FLAGS}"
-export CXXFLAGS="${BASE_FLAGS} ${PGO_GEN_FLAGS}"
-
-./configure --prefix="${INSTRUMENTED_INSTALL_DIR}" --enable-lto
+./configure --prefix="${INSTRUMENTED_INSTALL_DIR}"
 make -j"$(nproc)" V=1
 make install -j"$(nproc)" V=1
 
-unset CFLAGS CXXFLAGS AR RANLIB LTO_AR LTO_RANLIB LDFLAGS
+unset CFLAGS CXXFLAGS
 INSTRUMENTED_VALGRIND="${INSTRUMENTED_INSTALL_DIR}/bin/valgrind"
 
 
@@ -210,28 +234,41 @@ echo "Stage 4: Generate Profile Data"
 echo "========================================================================"
 cd "${BUILD_DIR}"
 
-echo "Downloading latest PGO benchmark source..."
-rm -f "${PGO_BENCHMARK_SRC}"
-curl -L -O ${CURL_VERBOSE} "${PGO_BENCHMARK_URL}"
-
 echo "Compiling the benchmark code..."
+curl -s -L -O "${PGO_BENCHMARK_URL}"
 ${CXX} -O3 -ipo -static -g3 -flto ${COMPILER_VERBOSE} -o "${PGO_BENCHMARK_EXE}" "${PGO_BENCHMARK_SRC}"
 
-export LLVM_PROFILE_FILE="${PGO_DATA_DIR}/default.profraw"
+# --- MODIFICATION 1: Use %p to create unique profile files for each process ---
+export LLVM_PROFILE_FILE="${PGO_DATA_DIR}/default-%p.profraw"
 echo "Running benchmark with instrumented Valgrind to generate PGO data..."
 echo "Timing information for the INSTRUMENTED run:"
-time "${INSTRUMENTED_VALGRIND}" ${VALGRIND_PGO_FLAGS} ./"${PGO_BENCHMARK_EXE}"
+time "${INSTRUMENTED_VALGRIND}" ${VALGRIND_PGO_FLAGS} ./"${PGO_BENCHMARK_EXE}" 2>/dev/null
 
 echo "Converting profile data from .profraw to .profdata format..."
-llvm-profdata merge -output="${PGO_DATA_DIR}/default.profdata" "${PGO_DATA_DIR}/default.profraw"
+# --- MODIFICATION 2: Use a wildcard to merge all generated .profraw files ---
+llvm-profdata merge -output="${PGO_DATA_DIR}/default.profdata" "${PGO_DATA_DIR}/default-"*.profraw
 echo "Profile data conversion completed."
 
 unset LLVM_PROFILE_FILE
-echo "Profile data has been generated."
 
 
 echo "========================================================================"
-echo "Stage 5: PGO Build - Phase 2 (Optimized Recompilation with LTO)"
+echo "Stage 5: Verify Profile Data"
+echo "========================================================================"
+echo "Verifying PGO data was generated successfully..."
+if [ ! -s "${PGO_DATA_DIR}/default.profdata" ]; then
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" >&2
+    echo "!! ERROR: PGO data file is missing or empty." >&2
+    echo "!! The instrumentation run in Stage 4 likely failed to generate profile data." >&2
+    echo "!! Check the log for errors during the benchmark run." >&2
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" >&2
+    exit 1
+fi
+echo "✓ PGO profile data is present and valid."
+
+
+echo "========================================================================"
+echo "Stage 6: PGO Build - Phase 2 (Optimized Recompilation with LTO)"
 echo "========================================================================"
 if [ -d "valgrind-pgo-optimized" ]; then
     rm -rf "valgrind-pgo-optimized"
@@ -240,40 +277,21 @@ tar -xjf "${TARBALL_NAME}"
 mv "valgrind-${VALGRIND_VERSION}" "valgrind-pgo-optimized"
 cd "valgrind-pgo-optimized"
 
-# Configure LLVM toolchain for proper LTO support with Intel icx
 echo "Configuring LLVM toolchain for LTO optimization..."
-INTEL_COMPILER_DIR="/opt/intel/oneapi/compiler/2025.2/bin/compiler"
-if [ -f "${INTEL_COMPILER_DIR}/llvm-ar" ] && [ -f "${INTEL_COMPILER_DIR}/llvm-ranlib" ]; then
-    export AR="${INTEL_COMPILER_DIR}/llvm-ar"
-    export RANLIB="${INTEL_COMPILER_DIR}/llvm-ranlib"
-    export LTO_AR="${INTEL_COMPILER_DIR}/llvm-ar"
-    export LTO_RANLIB="${INTEL_COMPILER_DIR}/llvm-ranlib"
-    
-    # Use LLVM linker if available, otherwise fall back to gold linker
-    if [ -f "${INTEL_COMPILER_DIR}/ld.lld" ]; then
-        export LDFLAGS="-fuse-ld=lld"
-        echo "Using LLVM linker (ld.lld) for LTO"
-    else
-        export LDFLAGS="-fuse-ld=gold"
-        echo "Using gold linker as fallback for LTO"
-    fi
-    
-    echo "LLVM toolchain configured successfully:"
-    echo "  AR: ${AR}"
-    echo "  RANLIB: ${RANLIB}"
-    echo "  LTO_AR: ${LTO_AR}"
-    echo "  LTO_RANLIB: ${LTO_RANLIB}"
-    echo "  LDFLAGS: ${LDFLAGS}"
-else
-    echo "WARNING: LLVM tools not found in Intel oneAPI. Falling back to system tools."
-    echo "LTO may not work optimally with this configuration."
-fi
+export AR="${INTEL_COMPILER_DIR}/llvm-ar"
+export RANLIB="${INTEL_COMPILER_DIR}/llvm-ranlib"
+export LTO_AR="${INTEL_COMPILER_DIR}/llvm-ar"
+export LTO_RANLIB="${INTEL_COMPILER_DIR}/llvm-ranlib"
+export LDFLAGS="-fuse-ld=lld"
+echo "Using LLVM linker (ld.lld) for LTO"
 
+echo "LLVM toolchain configured successfully."
+
+BASE_FLAGS_OPTIMIZED="-O3 -pipe -fp-model=fast -march=native -static -ffast-math -funroll-loops -finline-functions -inline-level=2 -fvectorize -vec -flto=full"
 PGO_USE_FLAGS="-fprofile-instr-use=${PGO_DATA_DIR}/default.profdata"
-export CFLAGS="${BASE_FLAGS} ${PGO_USE_FLAGS}"
-export CXXFLAGS="${BASE_FLAGS} ${PGO_USE_FLAGS}"
+export CFLAGS="${BASE_FLAGS_OPTIMIZED} ${PGO_USE_FLAGS}"
+export CXXFLAGS="${BASE_FLAGS_OPTIMIZED} ${PGO_USE_FLAGS}"
 
-# Configure to install to the final destination with proper LTO support
 ./configure --prefix="${INSTALL_PREFIX}" --enable-lto
 make -j"$(nproc)" V=1
 
@@ -281,26 +299,25 @@ unset CFLAGS CXXFLAGS AR RANLIB LTO_AR LTO_RANLIB LDFLAGS
 
 
 echo "========================================================================"
-echo "Stage 6: Install Final Binary and Tool Libraries"
+echo "Stage 7: Install Final Binary and Tool Libraries"
 echo "========================================================================"
 echo "Installing the final optimized binary and all its components to ${INSTALL_PREFIX}"
 make install -j"$(nproc)" V=1
 
 
 echo "========================================================================"
-echo "Stage 7: LTO Verification"
+echo "Stage 8: LTO Verification"
 echo "========================================================================"
 echo "Verifying that LTO was properly applied to the final binary..."
 
-# Check if the binary was built with LTO
 if [ -f "${FINAL_VALGRIND_PATH}" ]; then
     echo "Binary size analysis:"
     ls -lh "${FINAL_VALGRIND_PATH}"
-    
+
     echo ""
     echo "Checking compiler information in binary:"
     readelf -p .comment "${FINAL_VALGRIND_PATH}" 2>/dev/null | head -5 || echo "Could not read compiler info"
-    
+
     echo ""
     echo "LTO verification: Checking if build used LLVM tools..."
     if grep -q "llvm" "${BUILD_DIR}/valgrind-pgo-optimized/config.log" 2>/dev/null; then
@@ -308,9 +325,8 @@ if [ -f "${FINAL_VALGRIND_PATH}" ]; then
         echo "LTO should be properly enabled"
     else
         echo "⚠ WARNING: Build may not have used LLVM tools optimally"
-        echo "LTO effectiveness may be limited"
     fi
-    
+
     echo ""
     echo "Final binary information:"
     file "${FINAL_VALGRIND_PATH}"
@@ -321,7 +337,7 @@ fi
 
 
 echo "========================================================================"
-echo "Stage 8: Update Shell RC Files"
+echo "Stage 9: Update Shell RC Files"
 echo "========================================================================"
 EXPORT_LINE="export PATH=\"${INSTALL_PREFIX}/bin:\$PATH\""
 
@@ -341,11 +357,11 @@ done
 
 
 echo "========================================================================"
-echo "Stage 9: Final Test: Run Optimized Valgrind and Compare Timings"
+echo "Stage 10: Final Test: Run Optimized Valgrind and Compare Timings"
 echo "========================================================================"
 cd "${BUILD_DIR}"
 echo "Timing information for the FINAL OPTIMIZED run:"
-time "${FINAL_VALGRIND_PATH}" ${VALGRIND_PGO_FLAGS} ./"${PGO_BENCHMARK_EXE}"
+time "${FINAL_VALGRIND_PATH}" ${VALGRIND_PGO_FLAGS} ./"${PGO_BENCHMARK_EXE}" 2>/dev/null
 
 
 echo "========================================================================"

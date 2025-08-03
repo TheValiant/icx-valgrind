@@ -126,7 +126,7 @@ INSTRUMENTED_INSTALL_DIR="${BUILD_DIR}/temp_install"
 PGO_DATA_DIR="${BUILD_DIR}/pgo-data"
 mkdir -p "${PGO_DATA_DIR}"
 
-BASE_FLAGS="-O3 -v -pipe -fp-model=fast -march=native -static"
+BASE_FLAGS="-O3 -pipe -fp-model=fast -march=native -static"
 PGO_GEN_FLAGS="-prof-gen -prof-dir=${PGO_DATA_DIR}"
 export CFLAGS="${BASE_FLAGS} ${PGO_GEN_FLAGS}"
 export CXXFLAGS="${BASE_FLAGS} ${PGO_GEN_FLAGS}"

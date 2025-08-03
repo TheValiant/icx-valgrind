@@ -167,7 +167,7 @@ PGO_DATA_DIR="${BUILD_DIR}/pgo-data"
 mkdir -p "${PGO_DATA_DIR}"
 
 BASE_FLAGS="-O3 -pipe -fp-model=fast -march=native -static -ffast-math -funroll-loops -finline-functions -inline-level=2 -fvectorize -vec"
-PGO_GEN_FLAGS="-prof-gen -prof-dir=${PGO_DATA_DIR}"
+PGO_GEN_FLAGS="-fprofile-instr-generate=${PGO_DATA_DIR}/default.profraw"
 export CFLAGS="${BASE_FLAGS} ${PGO_GEN_FLAGS}"
 export CXXFLAGS="${BASE_FLAGS} ${PGO_GEN_FLAGS}"
 
@@ -191,10 +191,16 @@ curl -L -O ${CURL_VERBOSE} "${PGO_BENCHMARK_URL}"
 echo "Compiling the benchmark code..."
 ${CXX} -O3 -ipo -static -g3 -flto ${COMPILER_VERBOSE} -o "${PGO_BENCHMARK_EXE}" "${PGO_BENCHMARK_SRC}"
 
+export LLVM_PROFILE_FILE="${PGO_DATA_DIR}/default.profraw"
 echo "Running benchmark with instrumented Valgrind to generate PGO data..."
 echo "Timing information for the INSTRUMENTED run:"
 time "${INSTRUMENTED_VALGRIND}" ${VALGRIND_PGO_FLAGS} ./"${PGO_BENCHMARK_EXE}"
 
+echo "Converting profile data from .profraw to .profdata format..."
+llvm-profdata merge -output="${PGO_DATA_DIR}/default.profdata" "${PGO_DATA_DIR}/default.profraw"
+echo "Profile data conversion completed."
+
+unset LLVM_PROFILE_FILE
 echo "Profile data has been generated."
 
 
@@ -208,7 +214,7 @@ tar -xjf "${TARBALL_NAME}"
 mv "valgrind-${VALGRIND_VERSION}" "valgrind-pgo-optimized"
 cd "valgrind-pgo-optimized"
 
-PGO_USE_FLAGS="-prof-use -prof-dir=${PGO_DATA_DIR}"
+PGO_USE_FLAGS="-fprofile-instr-use=${PGO_DATA_DIR}/default.profdata"
 export CFLAGS="${BASE_FLAGS} ${PGO_USE_FLAGS}"
 export CXXFLAGS="${BASE_FLAGS} ${PGO_USE_FLAGS}"
 

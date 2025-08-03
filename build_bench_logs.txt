@@ -26,3 +26,22 @@ sys	0m0.811s
 Total tests completed: 100/100
 Total execution time: 73382ms
 post enable lto and static, now at baseline smh
+
+now PGO actually enabled, lto not yet actually.
+Real: 1:27.16
+User: 57.61
+Sys: 0.67
+CPU: 66%
+Max RSS: 173136 KB
+Page faults: 0
+Context switches: 1576/1424
+with bin valgrind
+
+Real: 1:19.67
+User: 49.56
+Sys: 0.77
+CPU: 63%
+Max RSS: 185952 KB
+Page faults: 0
+Context switches: 346/1411
+icx compiled

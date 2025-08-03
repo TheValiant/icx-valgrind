@@ -216,12 +216,9 @@ INSTRUMENTED_INSTALL_DIR="${BUILD_DIR}/temp_install"
 PGO_DATA_DIR="${BUILD_DIR}/pgo-data"
 mkdir -p "${PGO_DATA_DIR}"
 
-BASE_FLAGS_INSTRUMENT="-O3 -pipe -fp-model=fast -march=native -static -ffast-math -funroll-loops -finline-functions -inline-level=2 -fvectorize -vec"
+BASE_FLAGS_INSTRUMENT="-O3 -pipe -fp-model=fast -march=native -static -ffast-math -funroll-loops -fvectorize -vec"
 PGO_GEN_FLAGS="-fprofile-instr-generate"
 
-### CHANGED ###
-# Pass flags directly to configure instead of exporting them.
-# This ensures configure's internal tests use the correct flags.
 ./configure --prefix="${INSTRUMENTED_INSTALL_DIR}" \
     CFLAGS="${BASE_FLAGS_INSTRUMENT} ${PGO_GEN_FLAGS}" \
     CXXFLAGS="${BASE_FLAGS_INSTRUMENT} ${PGO_GEN_FLAGS}"
@@ -241,14 +238,12 @@ echo "Compiling the benchmark code..."
 curl -s -L -O "${PGO_BENCHMARK_URL}"
 ${CXX} -O3 -ipo -static -g3 -flto ${COMPILER_VERBOSE} -o "${PGO_BENCHMARK_EXE}" "${PGO_BENCHMARK_SRC}"
 
-# --- Use %p to create unique profile files for each process ---
 export LLVM_PROFILE_FILE="${PGO_DATA_DIR}/default-%p.profraw"
 echo "Running benchmark with instrumented Valgrind to generate PGO data..."
 echo "Timing information for the INSTRUMENTED run:"
 time "${INSTRUMENTED_VALGRIND}" ${VALGRIND_PGO_FLAGS} ./"${PGO_BENCHMARK_EXE}"
 
 echo "Converting profile data from .profraw to .profdata format..."
-# --- Use a wildcard to merge all generated .profraw files ---
 llvm-profdata merge -output="${PGO_DATA_DIR}/default.profdata" "${PGO_DATA_DIR}/default-"*.profraw
 echo "Profile data conversion completed."
 
@@ -280,20 +275,21 @@ tar -xjf "${TARBALL_NAME}"
 mv "valgrind-${VALGRIND_VERSION}" "valgrind-pgo-optimized"
 cd "valgrind-pgo-optimized"
 
-BASE_FLAGS_OPTIMIZED="-O3 -pipe -fp-model=fast -march=native -static -ffast-math -funroll-loops -finline-functions -inline-level=2 -fvectorize -vec -flto=full"
+### FIX: Removed redundant/problematic flags and separated PGO-use for the 'make' stage ###
+BASE_FLAGS_OPTIMIZED="-O3 -pipe -fp-model=fast -march=native -static -ffast-math -funroll-loops -fvectorize -vec -flto=full"
 PGO_USE_FLAGS="-fprofile-instr-use=${PGO_DATA_DIR}/default.profdata"
 
-### CHANGED ###
-# Pass all flags and toolchain variables directly to configure.
-# This is critical for it to correctly detect LTO support.
+# Run configure WITHOUT PGO flags to ensure its LTO check passes cleanly.
 ./configure --prefix="${INSTALL_PREFIX}" --enable-lto \
-    CFLAGS="${BASE_FLAGS_OPTIMIZED} ${PGO_USE_FLAGS}" \
-    CXXFLAGS="${BASE_FLAGS_OPTIMIZED} ${PGO_USE_FLAGS}" \
-    LDFLAGS="-fuse-ld=lld" \
+    CFLAGS="${BASE_FLAGS_OPTIMIZED}" \
+    CXXFLAGS="${BASE_FLAGS_OPTIMIZED}" \
+    LDFLAGS="-fuse-ld=lld -flto=full" \
     AR="${INTEL_COMPILER_DIR}/llvm-ar" \
     RANLIB="${INTEL_COMPILER_DIR}/llvm-ranlib"
 
-make -j"$(nproc)" V=1
+# Apply the PGO flags during the 'make' stage using AM_CFLAGS.
+# This appends the flags to the existing CFLAGS set by configure.
+make -j"$(nproc)" V=1 AM_CFLAGS="${PGO_USE_FLAGS}" AM_CXXFLAGS="${PGO_USE_FLAGS}"
 
 
 echo "========================================================================"

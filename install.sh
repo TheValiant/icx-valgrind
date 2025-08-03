@@ -126,12 +126,12 @@ INSTRUMENTED_INSTALL_DIR="${BUILD_DIR}/temp_install"
 PGO_DATA_DIR="${BUILD_DIR}/pgo-data"
 mkdir -p "${PGO_DATA_DIR}"
 
-BASE_FLAGS="-O3 -pipe -fp-model=fast -march=native -static"
+BASE_FLAGS="-O3 -pipe -fp-model=fast -march=native -static -ffast-math -funroll-loops -finline-functions -inline-level=2 -fvectorize -vec"
 PGO_GEN_FLAGS="-prof-gen -prof-dir=${PGO_DATA_DIR}"
 export CFLAGS="${BASE_FLAGS} ${PGO_GEN_FLAGS}"
 export CXXFLAGS="${BASE_FLAGS} ${PGO_GEN_FLAGS}"
 
-./configure --prefix="${INSTRUMENTED_INSTALL_DIR}" --disable-mpi --enable-lto
+./configure --prefix="${INSTRUMENTED_INSTALL_DIR}"  --enable-lto
 make -j"$(nproc)" V=1
 make install -j"$(nproc)" V=1
 
@@ -173,7 +173,7 @@ export CFLAGS="${BASE_FLAGS} ${PGO_USE_FLAGS}"
 export CXXFLAGS="${BASE_FLAGS} ${PGO_USE_FLAGS}"
 
 # Configure to install to the final destination
-./configure --prefix="${INSTALL_PREFIX}" --disable-mpi --enable-lto
+./configure --prefix="${INSTALL_PREFIX}"  --enable-lto
 make -j"$(nproc)" V=1
 
 unset CFLAGS CXXFLAGS

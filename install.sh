@@ -13,6 +13,46 @@ set -u    # Treat unset variables as an error when substituting.
 set -o pipefail # The return value of a pipeline is the status of the last command to exit with a non-zero status.
 set -x    # Print commands and their arguments as they are executed.
 
+# --- Logging Setup ---
+LOG_FILE="$(pwd)/valgrind_build_$(date +%Y%m%d_%H%M%S).log"
+echo "Starting Valgrind PGO build - logging to: ${LOG_FILE}"
+# Redirect all output to both terminal and log file
+exec > >(tee -a "${LOG_FILE}") 2>&1
+
+# --- Command Line Arguments ---
+VERBOSE=false
+for arg in "$@"; do
+    case $arg in
+        --verbose|-v)
+            VERBOSE=true
+            echo "Verbose mode enabled"
+            shift
+            ;;
+        --help|-h)
+            echo "Usage: $0 [--verbose|-v] [--help|-h]"
+            echo "  --verbose, -v    Enable verbose output for all build commands"
+            echo "  --help, -h       Show this help message"
+            exit 0
+            ;;
+        *)
+            echo "Unknown argument: $arg"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+done
+
+# Set verbose flags based on command line argument
+if [ "$VERBOSE" = true ]; then
+    CURL_VERBOSE="-v"
+    TAR_VERBOSE="-v"
+    COMPILER_VERBOSE="-v"
+else
+    CURL_VERBOSE=""
+    TAR_VERBOSE=""
+    COMPILER_VERBOSE=""
+fi
+
 # --- Build Configuration Variables ---
 VALGRIND_VERSION="3.25.1"
 VALGRIND_URL="https://sourceware.org/pub/valgrind/valgrind-${VALGRIND_VERSION}.tar.bz2"
@@ -84,9 +124,9 @@ if [ -f "$INTEL_SETVARS_SCRIPT" ]; then
     echo "Using Intel compilers: $(which icx) and $(which icpx)"
 
     echo "Performing a pre-flight check to ensure C++ compiler can build the benchmark..."
-    curl -L -O "${PGO_BENCHMARK_URL}"
+    curl -L -O ${CURL_VERBOSE} "${PGO_BENCHMARK_URL}"
     # Test compilation by outputting to /dev/null
-    ${CXX} -O3 -ipo -static -g3 -flto -o /dev/null "${PGO_BENCHMARK_SRC}"
+    ${CXX} -O3 -ipo -static -g3 -flto ${COMPILER_VERBOSE} -o /dev/null "${PGO_BENCHMARK_SRC}"
     rm -f "${PGO_BENCHMARK_SRC}"
     echo "Pre-flight check successful."
 fi
@@ -97,7 +137,7 @@ echo "Stage 1: Download Valgrind Source"
 echo "========================================================================"
 if [ ! -f "${TARBALL_NAME}" ]; then
     echo "Downloading Valgrind..."
-    curl -L -O "${VALGRIND_URL}"
+    curl -L -O ${CURL_VERBOSE} "${VALGRIND_URL}"
 else
     echo "Valgrind tarball already exists. Skipping download."
 fi
@@ -146,10 +186,10 @@ cd "${BUILD_DIR}"
 
 echo "Downloading latest PGO benchmark source..."
 rm -f "${PGO_BENCHMARK_SRC}"
-curl -L -O "${PGO_BENCHMARK_URL}"
+curl -L -O ${CURL_VERBOSE} "${PGO_BENCHMARK_URL}"
 
 echo "Compiling the benchmark code..."
-${CXX} -O3 -ipo -static -g3 -flto -o "${PGO_BENCHMARK_EXE}" "${PGO_BENCHMARK_SRC}"
+${CXX} -O3 -ipo -static -g3 -flto ${COMPILER_VERBOSE} -o "${PGO_BENCHMARK_EXE}" "${PGO_BENCHMARK_SRC}"
 
 echo "Running benchmark with instrumented Valgrind to generate PGO data..."
 echo "Timing information for the INSTRUMENTED run:"
@@ -220,6 +260,7 @@ echo "PGO-optimized Valgrind has been built and installed to: ${FINAL_VALGRIND_P
 echo ""
 echo "Please restart your shell or run 'source ~/.bashrc' or 'source ~/.zshrc' for the new PATH to take effect."
 echo "========================================================================"
+echo "Build log saved to: ${LOG_FILE}"
 
 # turn off xtrace
 set +x

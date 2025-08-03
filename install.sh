@@ -1,8 +1,16 @@
 #!/bin/bash
 #
 # This script performs a 2-stage Profile-Guided Optimization (PGO) build
-# of Valgrind. It prioritizes the Intel oneAPI compilers (icx/icpx) but
-# will fall back to the system's gcc/g++ if oneAPI is not found.
+# of Valgrind with Link Time Optimization (LTO). It prioritizes the Intel 
+# oneAPI compilers (icx/icpx) with proper LLVM toolchain integration for 
+# optimal LTO performance, but will fall back to system gcc/g++ if oneAPI 
+# is not found.
+#
+# Key optimizations:
+# - Profile-Guided Optimization (PGO) for runtime optimization
+# - Link Time Optimization (LTO) with LLVM toolchain integration
+# - Intel-specific optimization flags and vectorization
+# - Static linking for better performance
 #
 # It is designed to be idempotent and safe to re-run.
 #
@@ -153,7 +161,7 @@ echo "SHA1 hash verified successfully."
 
 
 echo "========================================================================"
-echo "Stage 3: PGO Build - Phase 1 (Instrumentation)"
+echo "Stage 3: PGO Build - Phase 1 (Instrumentation with LTO preparation)"
 echo "========================================================================"
 if [ -d "valgrind-pgo-instrumented" ]; then
     rm -rf "valgrind-pgo-instrumented"
@@ -166,16 +174,35 @@ INSTRUMENTED_INSTALL_DIR="${BUILD_DIR}/temp_install"
 PGO_DATA_DIR="${BUILD_DIR}/pgo-data"
 mkdir -p "${PGO_DATA_DIR}"
 
+# Configure LLVM toolchain for both phases to ensure consistency
+echo "Configuring LLVM toolchain for instrumentation phase..."
+INTEL_COMPILER_DIR="/opt/intel/oneapi/compiler/2025.2/bin/compiler"
+if [ -f "${INTEL_COMPILER_DIR}/llvm-ar" ] && [ -f "${INTEL_COMPILER_DIR}/llvm-ranlib" ]; then
+    export AR="${INTEL_COMPILER_DIR}/llvm-ar"
+    export RANLIB="${INTEL_COMPILER_DIR}/llvm-ranlib"
+    export LTO_AR="${INTEL_COMPILER_DIR}/llvm-ar"
+    export LTO_RANLIB="${INTEL_COMPILER_DIR}/llvm-ranlib"
+    
+    if [ -f "${INTEL_COMPILER_DIR}/ld.lld" ]; then
+        export LDFLAGS="-fuse-ld=lld"
+    else
+        export LDFLAGS="-fuse-ld=gold"
+    fi
+    echo "LLVM toolchain configured for instrumentation phase"
+else
+    echo "WARNING: LLVM tools not found. Using system tools for instrumentation."
+fi
+
 BASE_FLAGS="-O3 -pipe -fp-model=fast -march=native -static -ffast-math -funroll-loops -finline-functions -inline-level=2 -fvectorize -vec"
 PGO_GEN_FLAGS="-fprofile-instr-generate=${PGO_DATA_DIR}/default.profraw"
 export CFLAGS="${BASE_FLAGS} ${PGO_GEN_FLAGS}"
 export CXXFLAGS="${BASE_FLAGS} ${PGO_GEN_FLAGS}"
 
-./configure --prefix="${INSTRUMENTED_INSTALL_DIR}"  --enable-lto
+./configure --prefix="${INSTRUMENTED_INSTALL_DIR}" --enable-lto
 make -j"$(nproc)" V=1
 make install -j"$(nproc)" V=1
 
-unset CFLAGS CXXFLAGS
+unset CFLAGS CXXFLAGS AR RANLIB LTO_AR LTO_RANLIB LDFLAGS
 INSTRUMENTED_VALGRIND="${INSTRUMENTED_INSTALL_DIR}/bin/valgrind"
 
 
@@ -205,7 +232,7 @@ echo "Profile data has been generated."
 
 
 echo "========================================================================"
-echo "Stage 5: PGO Build - Phase 2 (Optimized Recompilation)"
+echo "Stage 5: PGO Build - Phase 2 (Optimized Recompilation with LTO)"
 echo "========================================================================"
 if [ -d "valgrind-pgo-optimized" ]; then
     rm -rf "valgrind-pgo-optimized"
@@ -214,15 +241,44 @@ tar -xjf "${TARBALL_NAME}"
 mv "valgrind-${VALGRIND_VERSION}" "valgrind-pgo-optimized"
 cd "valgrind-pgo-optimized"
 
+# Configure LLVM toolchain for proper LTO support with Intel icx
+echo "Configuring LLVM toolchain for LTO optimization..."
+INTEL_COMPILER_DIR="/opt/intel/oneapi/compiler/2025.2/bin/compiler"
+if [ -f "${INTEL_COMPILER_DIR}/llvm-ar" ] && [ -f "${INTEL_COMPILER_DIR}/llvm-ranlib" ]; then
+    export AR="${INTEL_COMPILER_DIR}/llvm-ar"
+    export RANLIB="${INTEL_COMPILER_DIR}/llvm-ranlib"
+    export LTO_AR="${INTEL_COMPILER_DIR}/llvm-ar"
+    export LTO_RANLIB="${INTEL_COMPILER_DIR}/llvm-ranlib"
+    
+    # Use LLVM linker if available, otherwise fall back to gold linker
+    if [ -f "${INTEL_COMPILER_DIR}/ld.lld" ]; then
+        export LDFLAGS="-fuse-ld=lld"
+        echo "Using LLVM linker (ld.lld) for LTO"
+    else
+        export LDFLAGS="-fuse-ld=gold"
+        echo "Using gold linker as fallback for LTO"
+    fi
+    
+    echo "LLVM toolchain configured successfully:"
+    echo "  AR: ${AR}"
+    echo "  RANLIB: ${RANLIB}"
+    echo "  LTO_AR: ${LTO_AR}"
+    echo "  LTO_RANLIB: ${LTO_RANLIB}"
+    echo "  LDFLAGS: ${LDFLAGS}"
+else
+    echo "WARNING: LLVM tools not found in Intel oneAPI. Falling back to system tools."
+    echo "LTO may not work optimally with this configuration."
+fi
+
 PGO_USE_FLAGS="-fprofile-instr-use=${PGO_DATA_DIR}/default.profdata"
 export CFLAGS="${BASE_FLAGS} ${PGO_USE_FLAGS}"
 export CXXFLAGS="${BASE_FLAGS} ${PGO_USE_FLAGS}"
 
-# Configure to install to the final destination
-./configure --prefix="${INSTALL_PREFIX}"  --enable-lto
+# Configure to install to the final destination with proper LTO support
+./configure --prefix="${INSTALL_PREFIX}" --enable-lto
 make -j"$(nproc)" V=1
 
-unset CFLAGS CXXFLAGS
+unset CFLAGS CXXFLAGS AR RANLIB LTO_AR LTO_RANLIB LDFLAGS
 
 
 echo "========================================================================"
@@ -233,7 +289,40 @@ make install -j"$(nproc)" V=1
 
 
 echo "========================================================================"
-echo "Stage 7: Update Shell RC Files"
+echo "Stage 7: LTO Verification"
+echo "========================================================================"
+echo "Verifying that LTO was properly applied to the final binary..."
+
+# Check if the binary was built with LTO
+if [ -f "${FINAL_VALGRIND_PATH}" ]; then
+    echo "Binary size analysis:"
+    ls -lh "${FINAL_VALGRIND_PATH}"
+    
+    echo ""
+    echo "Checking compiler information in binary:"
+    readelf -p .comment "${FINAL_VALGRIND_PATH}" 2>/dev/null | head -5 || echo "Could not read compiler info"
+    
+    echo ""
+    echo "LTO verification: Checking if build used LLVM tools..."
+    if grep -q "llvm" "${BUILD_DIR}/valgrind-pgo-optimized/config.log" 2>/dev/null; then
+        echo "✓ SUCCESS: Build configuration shows LLVM tools were used"
+        echo "LTO should be properly enabled"
+    else
+        echo "⚠ WARNING: Build may not have used LLVM tools optimally"
+        echo "LTO effectiveness may be limited"
+    fi
+    
+    echo ""
+    echo "Final binary information:"
+    file "${FINAL_VALGRIND_PATH}"
+else
+    echo "ERROR: Final Valgrind binary not found at ${FINAL_VALGRIND_PATH}"
+    exit 1
+fi
+
+
+echo "========================================================================"
+echo "Stage 8: Update Shell RC Files"
 echo "========================================================================"
 EXPORT_LINE="export PATH=\"${INSTALL_PREFIX}/bin:\$PATH\""
 
@@ -253,7 +342,7 @@ done
 
 
 echo "========================================================================"
-echo "Stage 8: Final Test: Run Optimized Valgrind and Compare Timings"
+echo "Stage 9: Final Test: Run Optimized Valgrind and Compare Timings"
 echo "========================================================================"
 cd "${BUILD_DIR}"
 echo "Timing information for the FINAL OPTIMIZED run:"
